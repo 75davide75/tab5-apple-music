@@ -4,6 +4,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
@@ -12,9 +13,11 @@
 #include "bsp/esp-bsp.h"
 #include "ams_ble.h"
 #include "ams_parse.h"
+#include "companion.h"
 #include "playback_clock.h"
 #include "source_arbiter.h"
 #include "standby.h"
+#include "text_util.h"
 #include "ui.h"
 
 #define BRIGHTNESS_ON 80
@@ -28,6 +31,17 @@ static now_playing_t s_np[SRC_COUNT];
 static source_arbiter_t s_arb;
 static standby_t s_standby;
 static bool s_dirty = true;
+
+/* Playlist shown in the right column (guarded by s_mx). */
+static companion_list_t *s_list;
+static bool s_list_dirty;
+static uint32_t s_req_seq;          /* id of the latest companion request; older answers are dropped */
+static now_playing_t s_req_np;      /* the track that request was about */
+static played_set_t s_played;
+static char s_playlist_name[128];
+static bool s_have_cur_id;
+static uint32_t s_cur_id;
+static ui_row_t *s_rows;
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -88,12 +102,114 @@ static void on_touch(lv_event_t *e)
     if (!was_on) lv_indev_wait_release(lv_event_get_target(e));
 }
 
+/* ---- companion callbacks (worker task) ---- */
+
+static void on_list(uint32_t seq, companion_list_t *list)
+{
+    now_playing_t np;
+    bool has_id = false;
+    uint32_t id = 0;
+
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    if (seq != s_req_seq) {              /* the track changed while we were asking */
+        xSemaphoreGive(s_mx);
+        companion_list_free(list);
+        return;
+    }
+    const char *name = (list && list->has_playlist) ? list->name : "";
+    if (strcmp(name, s_playlist_name) != 0) {
+        played_set_clear(&s_played);     /* a new playlist starts a new session */
+        snprintf(s_playlist_name, sizeof s_playlist_name, "%s", name);
+        s_have_cur_id = false;
+    }
+    has_id = list && list->has_track_id;
+    id = has_id ? list->track_id : 0;
+    if (s_have_cur_id && (!has_id || id != s_cur_id)) played_set_add(&s_played, s_cur_id);
+    s_have_cur_id = has_id;
+    s_cur_id = id;
+
+    companion_list_t *old = s_list;
+    s_list = list;
+    s_list_dirty = true;
+    np = s_req_np;
+    xSemaphoreGive(s_mx);
+
+    companion_list_free(old);
+    companion_request_cover(has_id, id, &np, seq);
+}
+
+static void on_cover(uint32_t seq, uint8_t *cover, uint8_t *bg)
+{
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    bool current = (seq == s_req_seq);
+    xSemaphoreGive(s_mx);
+    if (current && bsp_display_lock(1000)) {
+        ui_set_cover(cover, UI_COVER_PX, UI_COVER_PX);
+        ui_set_background(bg, UI_BG_W, UI_BG_H);
+        bsp_display_unlock();
+    }
+    companion_free(cover);
+    companion_free(bg);
+}
+
+static void on_thumb(uint32_t track_id, uint8_t *px)
+{
+    if (px && bsp_display_lock(1000)) {
+        ui_set_thumb(track_id, px);
+        bsp_display_unlock();
+    }
+    companion_free(px);
+}
+
+/* Runs on the LVGL task. */
+static void on_thumb_needed(uint32_t row_id)
+{
+    companion_request_thumb(row_id);
+}
+
+/* Fills the right column. Call with the display lock held. */
+static void render_list(const now_playing_t *np)
+{
+    char pos[48] = "";
+    if (np->queue_index >= 0 && np->queue_count > 0) {
+        snprintf(pos, sizeof pos, "Brano %d di %d", np->queue_index + 1, np->queue_count);
+    }
+
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    s_list_dirty = false;
+    if (!s_list || !s_list->has_playlist || !s_rows) {
+        xSemaphoreGive(s_mx);
+        ui_set_list(pos, "", np->shuffle, NULL, 0);
+        return;
+    }
+    int n = s_list->n < UI_MAX_ROWS ? s_list->n : UI_MAX_ROWS;
+    for (int i = 0; i < n; i++) {
+        const companion_track_t *t = &s_list->tracks[i];
+        bool current = !s_list->ordered && s_list->has_track_id && t->id == s_list->track_id;
+        s_rows[i] = (ui_row_t){.id = t->id, .title = t->title, .artist = t->artist, .duration_s = t->duration_s,
+                               .current = current,
+                               .played = !s_list->ordered && played_set_has(&s_played, t->id)};
+    }
+    /* Only a queue we know to be in playlist order may be called "next". */
+    if (s_list->ordered) ui_set_list("Prossimi brani", s_list->name, false, s_rows, n);
+    else ui_set_list(s_list->name, pos, np->shuffle, s_rows, n);
+    xSemaphoreGive(s_mx);
+}
+
 static void ui_task(void *arg)
 {
     now_playing_t shown;
     now_playing_init(&shown);
     source_t shown_src = SRC_NONE;
     bool screen_on = false;
+
+    /* what the last companion request was made for */
+    uint32_t asked_seq = UINT32_MAX;
+    source_t asked_src = SRC_NONE;
+    bool asked_shuffle = false;
+    int asked_count = -2;
+    int64_t changed_ms = 0;
+    bool ask_pending = false;
 
     for (;;) {
         int64_t t = now_ms();
@@ -105,18 +221,35 @@ static void ui_task(void *arg)
         else if (shown.state == PB_PLAYING) shown.state = PB_PAUSED;   /* source went away */
         standby_on_playback(&s_standby, src == SRC_NONE ? PB_STOPPED : shown.state, t);
         bool on = standby_screen_on(&s_standby, t);
+        bool list_dirty = s_list_dirty;
         xSemaphoreGive(s_mx);
+
+        /* A track change arrives as several separate updates (artist, album, title):
+         * wait until they settle before asking the Mac about it. */
+        if (src != SRC_NONE && (shown.track_seq != asked_seq || src != asked_src ||
+                                shown.shuffle != asked_shuffle || shown.queue_count != asked_count)) {
+            asked_seq = shown.track_seq;
+            asked_src = src;
+            asked_shuffle = shown.shuffle;
+            asked_count = shown.queue_count;
+            changed_ms = t;
+            ask_pending = true;
+        }
+        if (ask_pending && t - changed_ms >= 400 && shown.title[0]) {
+            ask_pending = false;
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            uint32_t seq = ++s_req_seq;
+            s_req_np = shown;
+            xSemaphoreGive(s_mx);
+            companion_request_list(&shown, seq);
+        }
 
         if (bsp_display_lock(100)) {
             if (dirty) {
                 ui_set_now_playing(&shown, src);
-                char hdr[48] = "";
-                if (shown.queue_index >= 0 && shown.queue_count > 0) {
-                    snprintf(hdr, sizeof hdr, "Brano %d di %d", shown.queue_index + 1, shown.queue_count);
-                }
-                ui_set_list(hdr, "", shown.shuffle, NULL, 0);
                 shown_src = src;
             }
+            if (dirty || list_dirty) render_list(&shown);
             ui_tick(playback_elapsed_s(&shown, t), shown.duration_s);
             bsp_display_unlock();
         }
@@ -164,8 +297,14 @@ void app_main(void)
     bsp_display_lock(0);
     bsp_display_rotate(disp, LV_DISPLAY_ROTATION_90);
     ui_init(on_ui_cmd);
+    ui_on_thumb_needed(on_thumb_needed);
     lv_indev_add_event_cb(bsp_display_get_input_dev(), on_touch, LV_EVENT_PRESSED, NULL);
     bsp_display_unlock();
+
+    s_rows = heap_caps_calloc(UI_MAX_ROWS, sizeof(ui_row_t), MALLOC_CAP_SPIRAM);
+    played_set_clear(&s_played);
+    static const companion_callbacks_t companion_cb = {.on_list = on_list, .on_cover = on_cover, .on_thumb = on_thumb};
+    ESP_ERROR_CHECK(companion_start(&companion_cb));
 
     ESP_ERROR_CHECK(ams_ble_start(on_ams_update, on_ams_conn));
     xTaskCreate(ui_task, "ui", 8192, NULL, 4, NULL);
