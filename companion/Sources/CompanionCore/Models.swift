@@ -41,4 +41,11 @@ public struct Query: Sendable {
 public struct Match: Sendable {
     public let playlist: Playlist
     public let currentPosition: Int
+    /// True only when the phone's queue position is this track's position in the playlist,
+    /// i.e. the playlist order can be shown as "what plays next".
+    public let inOrder: Bool
+
+    public init(playlist: Playlist, currentPosition: Int, inOrder: Bool) {
+        self.playlist = playlist; self.currentPosition = currentPosition; self.inOrder = inOrder
+    }
 }

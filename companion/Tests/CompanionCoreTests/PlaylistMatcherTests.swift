@@ -27,9 +27,27 @@ final class PlaylistMatcherTests: XCTestCase {
         XCTAssertNil(PlaylistMatcher().match(query("Brano 3", count: 41), in: [playlist("a", count: 42)]))
     }
 
-    func testWithoutShufflePositionMustMatch() {
-        XCTAssertNil(PlaylistMatcher().match(query("Brano 13", index: 5, count: 42, shuffle: false),
-                                             in: [playlist("a", count: 42)]))
+    func testInOrderWhenReportedPositionIsThisTrack() {
+        let m = PlaylistMatcher().match(query("Brano 13", index: 13, count: 42, shuffle: false),
+                                        in: [playlist("a", count: 42)])
+        XCTAssertEqual(m?.inOrder, true)
+    }
+
+    // Seen on a real iPhone: shuffle off, yet the queue order differs from the playlist order
+    // on the Mac (different sort order on the phone). The playlist is still the right one,
+    // but its order must not be presented as what plays next.
+    func testWithoutShufflePositionMismatchStillMatchesButNotInOrder() {
+        let m = PlaylistMatcher().match(query("Brano 30", index: 11, count: 42, shuffle: false),
+                                        in: [playlist("a", count: 42)])
+        XCTAssertEqual(m?.playlist.id, "a")
+        XCTAssertEqual(m?.currentPosition, 30)
+        XCTAssertEqual(m?.inOrder, false)
+    }
+
+    func testShuffleIsNeverInOrder() {
+        let m = PlaylistMatcher().match(query("Brano 13", index: 13, count: 42, shuffle: true),
+                                        in: [playlist("a", count: 42)])
+        XCTAssertEqual(m?.inOrder, false)
     }
 
     func testWithShufflePositionIsIgnored() {

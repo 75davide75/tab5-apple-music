@@ -8,7 +8,7 @@ public final class PlaylistMatcher {
 
     public init() {}
 
-    static func normalize(_ s: String) -> String {
+    public static func normalize(_ s: String) -> String {
         s.trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
@@ -23,12 +23,11 @@ public final class PlaylistMatcher {
                 Self.normalize(p.tracks[$0].title) == title && Self.normalize(p.tracks[$0].artist) == artist
             }
             guard let first = positions.first else { continue }
-            if !q.shuffle, let index = q.index {
-                // In order, the reported queue position must be this very track.
-                guard positions.contains(index) else { continue }
-                candidates.append(Match(playlist: p, currentPosition: index))
+            if !q.shuffle, let index = q.index, positions.contains(index) {
+                candidates.append(Match(playlist: p, currentPosition: index, inOrder: true))
             } else {
-                candidates.append(Match(playlist: p, currentPosition: first))
+                // Shuffled, or the phone plays this playlist in an order we cannot see.
+                candidates.append(Match(playlist: p, currentPosition: first, inOrder: false))
             }
         }
 

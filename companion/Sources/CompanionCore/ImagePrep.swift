@@ -34,14 +34,43 @@ public enum ImagePrep {
     }
 
     /// A 160x90 soft wash of the artwork colours, used as the screen background.
-    /// Shrinking to a handful of pixels and scaling back up gives the blur.
+    /// White text is drawn over it, so it is blurred until featureless and toned down.
     public static func blurredBackground(_ image: CGImage) -> Data {
-        let tiny = rgba(image, width: 8, height: 5, quality: .high)
-        let provider = CGDataProvider(data: Data(tiny) as CFData)!
-        let small = CGImage(width: 8, height: 5, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 32,
-                            space: CGColorSpaceCreateDeviceRGB(),
-                            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-                            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)!
-        return pack565(rgba(small, width: 160, height: 90, quality: .high))
+        let w = 160, h = 90
+        let src = rgba(image, width: w, height: h, quality: .medium)
+        var px = [Float](repeating: 0, count: w * h * 3)
+        for i in 0..<(w * h) { for c in 0..<3 { px[i * 3 + c] = Float(src[i * 4 + c]) } }
+
+        // Three box-blur passes approximate a wide Gaussian.
+        var tmp = px
+        for _ in 0..<3 {
+            boxBlur(&px, &tmp, w: w, h: h, radius: 28, horizontal: true)
+            boxBlur(&tmp, &px, w: w, h: h, radius: 18, horizontal: false)
+        }
+
+        let peak = px.max() ?? 0
+        let gain: Float = peak > 105 ? 105 / peak : 1
+        var out = [UInt8](repeating: 255, count: w * h * 4)
+        for i in 0..<(w * h) { for c in 0..<3 { out[i * 4 + c] = UInt8(max(0, min(255, px[i * 3 + c] * gain))) } }
+        return pack565(out)
+    }
+
+    private static func boxBlur(_ src: inout [Float], _ dst: inout [Float], w: Int, h: Int, radius: Int,
+                                horizontal: Bool) {
+        let lines = horizontal ? h : w, length = horizontal ? w : h
+        for line in 0..<lines {
+            for c in 0..<3 {
+                func at(_ i: Int) -> Int {
+                    let k = min(max(i, 0), length - 1)   // clamp at the edges
+                    return ((horizontal ? line * w + k : k * w + line) * 3) + c
+                }
+                var sum: Float = 0
+                for i in -radius...radius { sum += src[at(i)] }
+                for i in 0..<length {
+                    dst[at(i)] = sum / Float(2 * radius + 1)
+                    sum += src[at(i + radius + 1)] - src[at(i - radius)]
+                }
+            }
+        }
     }
 }

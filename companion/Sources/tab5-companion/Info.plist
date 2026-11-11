@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>com.tab5music.companion</string>
+    <key>CFBundleName</key><string>Tab5 Music Companion</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Legge il brano in riproduzione, le playlist e le copertine dall'app Musica per mostrarli sul Tab5.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Invia al Tab5 sulla rete di casa le informazioni sulla musica in riproduzione.</string>
+    <key>NSBonjourServices</key><array><string>_tab5music._tcp</string></array>
+</dict>
+</plist>
