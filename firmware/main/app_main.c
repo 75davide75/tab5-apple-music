@@ -1,76 +1,132 @@
-/* Task 1 spike: show raw Apple Media Service data from a paired iPhone. */
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
 #include "ams_ble.h"
+#include "ams_parse.h"
+#include "playback_clock.h"
+#include "source_arbiter.h"
+#include "standby.h"
+#include "ui.h"
 
-static const char *TAG = "spike";
-static lv_obj_t *s_lbl[8];
-enum { L_CONN, L_PLAYER, L_TITLE, L_ARTIST, L_INFO, L_QUEUE, L_SHUFFLE, L_DUR };
-static const char *s_names[] = {"Connessione", "Lettore", "Titolo", "Artista", "PlaybackInfo",
-                                "Coda", "Casuale", "Durata"};
-static char s_q_index[16] = "?", s_q_count[16] = "?";
-static uint8_t s_slot;
+#define BRIGHTNESS_ON 80
+#define UI_PERIOD_MS 250
 
-static void set_label(int i, const char *value)
+static const char *TAG = "app";
+
+/* Shared state, guarded by s_mx. Never take the display lock while holding s_mx. */
+static SemaphoreHandle_t s_mx;
+static now_playing_t s_np[SRC_COUNT];
+static source_arbiter_t s_arb;
+static standby_t s_standby;
+static bool s_dirty = true;
+
+static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+
+/* Only Apple's Music app counts as playback; anything else keeps the screen off. */
+static void report_ios(int slot)
 {
-    if (bsp_display_lock(100)) {
-        lv_label_set_text_fmt(s_lbl[i], "%s: %s", s_names[i], value);
-        bsp_display_unlock();
+    pb_state_t st = ams_player_is_music(&s_np[slot]) ? s_np[slot].state : PB_STOPPED;
+    arbiter_report(&s_arb, (source_t)slot, st, now_ms());
+}
+
+static void on_ams_update(uint8_t slot, uint8_t entity, uint8_t attr, uint8_t flags,
+                          const char *value, size_t len)
+{
+    if (slot >= AMS_MAX_PEERS) return;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    if (ams_apply_update(&s_np[slot], entity, attr, flags, value, len, now_ms())) {
+        report_ios(slot);
+        s_dirty = true;
+    }
+    xSemaphoreGive(s_mx);
+}
+
+static void on_ams_conn(uint8_t slot, bool connected)
+{
+    if (slot >= AMS_MAX_PEERS) return;
+    ESP_LOGI(TAG, "iOS slot %d %s", slot, connected ? "connected" : "disconnected");
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    if (!connected) {
+        now_playing_init(&s_np[slot]);
+        arbiter_disconnected(&s_arb, (source_t)slot);
+        s_dirty = true;
+    }
+    xSemaphoreGive(s_mx);
+}
+
+/* Runs on the LVGL task. */
+static void on_ui_cmd(ui_cmd_t cmd, float seek_s)
+{
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    source_t src = arbiter_active(&s_arb);
+    xSemaphoreGive(s_mx);
+
+    if (src == SRC_IOS_0 || src == SRC_IOS_1) {
+        static const uint8_t map[] = {[UI_CMD_TOGGLE] = AMS_CMD_TOGGLE, [UI_CMD_NEXT] = AMS_CMD_NEXT,
+                                      [UI_CMD_PREV] = AMS_CMD_PREV};
+        if (cmd != UI_CMD_SEEK) ams_ble_send_command((uint8_t)src, map[cmd]);
     }
 }
 
-static void on_update(uint8_t slot, uint8_t entity, uint8_t attr, uint8_t flags,
-                      const char *value, size_t len)
+/* Runs on the LVGL task: a touch on the dark screen only wakes it. */
+static void on_touch(lv_event_t *e)
 {
-    char v[256];
-    if (len >= sizeof v) len = sizeof v - 1;
-    memcpy(v, value, len);
-    v[len] = 0;
-    ESP_LOGI(TAG, "slot=%d entity=%d attr=%d flags=%d value='%s'", slot, entity, attr, flags, v);
-    s_slot = slot;
-    if (entity == 0 && attr == 0) set_label(L_PLAYER, v);
-    else if (entity == 0 && attr == 1) set_label(L_INFO, v);
-    else if (entity == 1 && (attr == 0 || attr == 1)) {
-        snprintf(attr == 0 ? s_q_index : s_q_count, 16, "%.15s", v);
-        char q[48];
-        snprintf(q, sizeof q, "indice %s di %s", s_q_index, s_q_count);
-        set_label(L_QUEUE, q);
-    } else if (entity == 1 && attr == 2) set_label(L_SHUFFLE, v);
-    else if (entity == 2 && attr == 0) set_label(L_ARTIST, v);
-    else if (entity == 2 && attr == 2) set_label(L_TITLE, v);
-    else if (entity == 2 && attr == 3) set_label(L_DUR, v);
+    int64_t t = now_ms();
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    bool was_on = standby_screen_on(&s_standby, t);
+    standby_on_touch(&s_standby, t);
+    xSemaphoreGive(s_mx);
+    if (!was_on) lv_indev_wait_release(lv_event_get_target(e));
 }
 
-static void on_conn(uint8_t slot, bool connected)
+static void ui_task(void *arg)
 {
-    char s[32];
-    snprintf(s, sizeof s, "%s (slot %d)", connected ? "AMS pronto" : "scollegato", slot);
-    set_label(L_CONN, s);
-}
+    now_playing_t shown;
+    now_playing_init(&shown);
+    source_t shown_src = SRC_NONE;
+    bool screen_on = false;
 
-static void btn_cb(lv_event_t *e)
-{
-    uint8_t cmd = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-    ESP_LOGI(TAG, "command %d -> %s", cmd, esp_err_to_name(ams_ble_send_command(s_slot, cmd)));
-}
+    for (;;) {
+        int64_t t = now_ms();
+        xSemaphoreTake(s_mx, portMAX_DELAY);
+        source_t src = arbiter_active(&s_arb);
+        bool dirty = s_dirty || src != shown_src;
+        s_dirty = false;
+        if (src != SRC_NONE) shown = s_np[src];
+        else if (shown.state == PB_PLAYING) shown.state = PB_PAUSED;   /* source went away */
+        standby_on_playback(&s_standby, src == SRC_NONE ? PB_STOPPED : shown.state, t);
+        bool on = standby_screen_on(&s_standby, t);
+        xSemaphoreGive(s_mx);
 
-static void make_button(lv_obj_t *parent, const char *text, uint8_t cmd, int x)
-{
-    lv_obj_t *b = lv_button_create(parent);
-    lv_obj_set_size(b, 280, 110);
-    lv_obj_align(b, LV_ALIGN_BOTTOM_LEFT, x, -30);
-    lv_obj_add_event_cb(b, btn_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)cmd);
-    lv_obj_t *l = lv_label_create(b);
-    lv_label_set_text(l, text);
-    lv_obj_center(l);
+        if (bsp_display_lock(100)) {
+            if (dirty) {
+                ui_set_now_playing(&shown, src);
+                char hdr[48] = "";
+                if (shown.queue_index >= 0 && shown.queue_count > 0) {
+                    snprintf(hdr, sizeof hdr, "Brano %d di %d", shown.queue_index + 1, shown.queue_count);
+                }
+                ui_set_list(hdr, "", shown.shuffle, NULL, 0);
+                shown_src = src;
+            }
+            ui_tick(playback_elapsed_s(&shown, t), shown.duration_s);
+            bsp_display_unlock();
+        }
+
+        if (on != screen_on) {
+            bsp_display_brightness_set(on ? BRIGHTNESS_ON : 0);
+            screen_on = on;
+        }
+        vTaskDelay(pdMS_TO_TICKS(UI_PERIOD_MS));
+    }
 }
 
 void app_main(void)
@@ -82,7 +138,13 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* The ESP32-C6 radio is powered through the IO expander. */
+    s_mx = xSemaphoreCreateMutex();
+    for (int i = 0; i < SRC_COUNT; i++) now_playing_init(&s_np[i]);
+    arbiter_init(&s_arb);
+    standby_init(&s_standby, now_ms());
+
+    /* The ESP32-C6 radio is powered through the IO expander; bring the link up
+     * before the display (see the Task 1 notes in the README). */
     ESP_ERROR_CHECK(bsp_feature_enable(BSP_FEATURE_WIFI, true));
     vTaskDelay(pdMS_TO_TICKS(300));
     ESP_ERROR_CHECK(esp_netif_init());
@@ -96,21 +158,15 @@ void app_main(void)
         .double_buffer = true,
         .flags = {.buff_dma = false, .buff_spiram = true, .sw_rotate = true},
     };
+    cfg.lvgl_port_cfg.task_stack = 32768;
     lv_display_t *disp = bsp_display_start_with_config(&cfg);
-    bsp_display_backlight_on();
+    bsp_display_brightness_set(0);
     bsp_display_lock(0);
     bsp_display_rotate(disp, LV_DISPLAY_ROTATION_90);
-    lv_obj_t *scr = lv_screen_active();
-    for (int i = 0; i < 8; i++) {
-        s_lbl[i] = lv_label_create(scr);
-        lv_obj_set_style_text_font(s_lbl[i], &lv_font_montserrat_28, 0);
-        lv_label_set_text_fmt(s_lbl[i], "%s: -", s_names[i]);
-        lv_obj_align(s_lbl[i], LV_ALIGN_TOP_LEFT, 30, 30 + i * 58);
-    }
-    make_button(scr, "Play / Pausa", AMS_CMD_TOGGLE, 30);
-    make_button(scr, "Avanti", AMS_CMD_NEXT, 340);
+    ui_init(on_ui_cmd);
+    lv_indev_add_event_cb(bsp_display_get_input_dev(), on_touch, LV_EVENT_PRESSED, NULL);
     bsp_display_unlock();
 
-    ESP_ERROR_CHECK(ams_ble_start(on_update, on_conn));
-    set_label(L_CONN, "in attesa di abbinamento");
+    ESP_ERROR_CHECK(ams_ble_start(on_ams_update, on_ams_conn));
+    xTaskCreate(ui_task, "ui", 8192, NULL, 4, NULL);
 }

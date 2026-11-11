@@ -1,6 +1,7 @@
 #include "playback_clock.h"
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 float playback_elapsed_s(const now_playing_t *np, int64_t now_ms)
 {
@@ -20,5 +21,8 @@ void format_mmss(float seconds, char out[8])
         return;
     }
     int total = (int)seconds;
-    snprintf(out, 8, "%d:%02d", total / 60, total % 60);
+    char tmp[24];
+    snprintf(tmp, sizeof tmp, "%d:%02d", total / 60, total % 60);
+    memcpy(out, tmp, 7);
+    out[7] = 0;
 }
