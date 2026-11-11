@@ -83,57 +83,15 @@ dependencies:
       type: service
     version: 1.0.4
   espressif/esp_hosted:
-    component_hash: 22b08509494d4465f0e2f91ee16973d76fe90d5a930fa3910b7a43615db001bf
+    component_hash: 0dbfbec0c1cbb1bb854b16aa66457bb6b70debf677903134c769ef5874669803
     dependencies:
-    - name: cherry-embedded/cherryusb
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: target in [esp32p4]
-      - if: $CONFIG{ESP_HOSTED_HOST_USB_CHERRYUSB_MANIFEST} == 1
-      version: '>=1.6.0'
-    - name: espressif/esp_tinyusb
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: target in [esp32s2, esp32s3, esp32s31]
-      - if: $CONFIG{ESP_HOSTED_CP_TINYUSB_MANIFEST} == 1
-      version: '*'
-    - name: espressif/iot_usbh_rndis
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: target in [esp32p4]
-      - if: $CONFIG{ESP_HOSTED_HOST_USB_RNDIS_MANIFEST} == 1
-      version: ^0.5.2
-    - name: espressif/usb_host_cdc_acm
-      registry_url: https://components.espressif.com
-      require: private
-      rules:
-      - if: target in [esp32p4]
-      - if: $CONFIG{ESP_HOSTED_HOST_USB_CDC_ACM_MANIFEST} == 1
-      version: '*'
     - name: idf
       require: private
-      version: '>=5.5'
+      version: '>=5.3'
     source:
       registry_url: https://components.espressif.com/
       type: service
-    targets:
-    - esp32
-    - esp32s2
-    - esp32s3
-    - esp32s31
-    - esp32c2
-    - esp32c3
-    - esp32c5
-    - esp32c6
-    - esp32c61
-    - esp32h2
-    - esp32h4
-    - esp32h21
-    - esp32p4
-    version: 3.1.0
+    version: 2.13.1
   espressif/esp_io_expander:
     component_hash: 7b7f91270172e46ca4597e3874f48d8412e280e8c295559f5922ec38656e3e5f
     dependencies:
@@ -523,6 +481,6 @@ direct_dependencies:
 - espressif/esp_wifi_remote
 - espressif/m5stack_tab5
 - idf
-manifest_hash: fe0f8e696b31128302b4c210f670d7994d91b7e7f7104e41099043b2a5e47818
+manifest_hash: 7d5899fa5d14a917a860b347fb87f8b3c2d2e4cb34854d58f13f9872a7fc3575
 target: esp32p4
 version: 2.0.0

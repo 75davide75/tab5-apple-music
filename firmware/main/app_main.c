@@ -1,6 +1,8 @@
 /* Task 1 spike: show raw Apple Media Service data from a paired iPhone. */
 #include <stdio.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -80,6 +82,14 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    /* The ESP32-C6 radio is powered through the IO expander. */
+    ESP_ERROR_CHECK(bsp_feature_enable(BSP_FEATURE_WIFI, true));
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
+
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
         .buffer_size = BSP_LCD_H_RES * BSP_LCD_V_RES,
@@ -100,13 +110,6 @@ void app_main(void)
     make_button(scr, "Play / Pausa", AMS_CMD_TOGGLE, 30);
     make_button(scr, "Avanti", AMS_CMD_NEXT, 340);
     bsp_display_unlock();
-
-    /* The ESP32-C6 radio is powered through the IO expander. */
-    ESP_ERROR_CHECK(bsp_feature_enable(BSP_FEATURE_WIFI, true));
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
 
     ESP_ERROR_CHECK(ams_ble_start(on_update, on_conn));
     set_label(L_CONN, "in attesa di abbinamento");

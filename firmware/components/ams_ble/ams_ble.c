@@ -1,7 +1,7 @@
 #include "ams_ble.h"
 #include <string.h>
 #include "esp_log.h"
-#include "esp_hosted_bt_host_stack.h"
+#include "esp_hosted.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -74,7 +74,7 @@ static void advertise(void)
 
     struct ble_hs_adv_fields fields = {0};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.sol_uuids128 = &UUID_AMS;
+    fields.sol_uuids128 = &UUID_ANCS;
     fields.sol_num_uuids128 = 1;
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) { ESP_LOGE(TAG, "adv_set_fields rc=%d", rc); return; }
@@ -84,7 +84,7 @@ static void advertise(void)
     rsp.name = (const uint8_t *)name;
     rsp.name_len = strlen(name);
     rsp.name_is_complete = 1;
-    rsp.sol_uuids128 = &UUID_ANCS;
+    rsp.sol_uuids128 = &UUID_AMS;
     rsp.sol_num_uuids128 = 1;
     rc = ble_gap_adv_rsp_set_fields(&rsp);
     if (rc != 0) { ESP_LOGE(TAG, "adv_rsp_set_fields rc=%d", rc); return; }
@@ -304,10 +304,11 @@ esp_err_t ams_ble_start(ams_raw_cb_t on_update, ams_conn_cb_t on_conn)
     s_on_update = on_update;
     s_on_conn = on_conn;
 
-    esp_hosted_bt_host_stack_cfg_t bt = ESP_HOSTED_BT_HOST_STACK_CONFIG_DEFAULT();
-    esp_err_t err = esp_hosted_bt_host_stack_setup(&bt);
-    if (err != ESP_OK) return err;
-    err = nimble_port_init();
+    /* The Bluetooth controller lives on the ESP32-C6; bring it up over ESP-Hosted. */
+    esp_hosted_connect_to_slave();
+    /* The factory ESP32-C6 firmware starts its Bluetooth controller at boot and
+     * does not implement the newer controller init/enable requests. */
+    esp_err_t err = nimble_port_init();
     if (err != ESP_OK) return err;
 
     ble_hs_cfg.sync_cb = on_sync;
