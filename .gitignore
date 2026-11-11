@@ -1,0 +1,8 @@
+.superpowers/
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/main/wifi_secrets.h
+companion/.build/
+.DS_Store
