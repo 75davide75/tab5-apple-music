@@ -135,6 +135,9 @@ static void on_list(uint32_t seq, companion_list_t *list)
     s_list_missing = (list == NULL);
     np = s_req_np;
     xSemaphoreGive(s_mx);
+    ESP_LOGI(TAG, "list for request %u: %s, %d tracks, track id %s", (unsigned)seq,
+             list ? (list->has_playlist ? list->name : "no playlist") : "Mac unreachable", list ? list->n : 0,
+             has_id ? "known" : "unknown");
 
     companion_list_free(old);
     companion_request_cover(has_id, id, &np, seq);
@@ -145,6 +148,8 @@ static void on_cover(uint32_t seq, uint8_t *cover, uint8_t *bg)
     xSemaphoreTake(s_mx, portMAX_DELAY);
     bool current = (seq == s_req_seq);
     xSemaphoreGive(s_mx);
+    ESP_LOGI(TAG, "cover for request %u: cover=%s background=%s%s", (unsigned)seq, cover ? "yes" : "no",
+             bg ? "yes" : "no", current ? "" : " (stale, dropped)");
     if (current && bsp_display_lock(1000)) {
         ui_set_cover(cover, UI_COVER_PX, UI_COVER_PX);
         ui_set_background(bg, UI_BG_W, UI_BG_H);

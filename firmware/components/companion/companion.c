@@ -10,6 +10,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "mdns.h"
 #include "nvs.h"
@@ -26,6 +27,11 @@
 #define THUMB_BYTES (52 * 52 * 2)
 #define BG_BYTES (160 * 90 * 2)
 #define REDISCOVER_MS 10000
+
+/* Measured on this Tab5 (factory ESP32-C6 firmware, esp_hosted host 2.13): the Wi-Fi
+ * link delivers about 4 kB/s, so a raw 320 kB cover would block the worker for over a
+ * minute. Image downloads stay off until that is solved (see README, "Limiti noti"). */
+#define FETCH_IMAGES 0
 
 static const char *TAG = "companion";
 
@@ -129,6 +135,8 @@ static uint8_t *http_get(const char *path, size_t cap, size_t *len, int timeout_
         s_failures = 0;
     }
     if (err != ESP_OK || status != 200 || body.overflow) {
+        ESP_LOGW(TAG, "GET %.60s failed: %s, status %d, %u bytes%s", path, esp_err_to_name(err), status,
+                 (unsigned)body.len, body.overflow ? ", too large" : "");
         heap_caps_free(body.buf);
         return NULL;
     }
@@ -141,7 +149,11 @@ static uint8_t *get_pixels(const char *path, size_t bytes, int timeout_ms)
 {
     size_t len = 0;
     uint8_t *px = http_get(path, bytes, &len, timeout_ms);
-    if (px && len != bytes) { heap_caps_free(px); px = NULL; }
+    if (px && len != bytes) {
+        ESP_LOGW(TAG, "GET %.60s: %u bytes, expected %u", path, (unsigned)len, (unsigned)bytes);
+        heap_caps_free(px);
+        px = NULL;
+    }
     return px;
 }
 
@@ -210,7 +222,7 @@ static void run_job(job_t *j)
     }
     case JOB_COVER: {
         uint8_t *cover = NULL, *bg = NULL;
-        if (s_available) {
+        if (FETCH_IMAGES && s_available) {
             art_path(path, sizeof path, "/v1/art", j, 400);
             cover = get_pixels(path, COVER_BYTES, 8000);
             if (cover) {
@@ -224,7 +236,7 @@ static void run_job(job_t *j)
     }
     case JOB_THUMB: {
         uint8_t *px = NULL;
-        if (s_available) {
+        if (FETCH_IMAGES && s_available) {
             snprintf(path, sizeof path, "/v1/art?id=%u&size=52", (unsigned)j->track_id);
             px = get_pixels(path, THUMB_BYTES, 4000);
         }

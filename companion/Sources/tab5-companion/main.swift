@@ -28,7 +28,10 @@ func handle(_ request: HTTPRequest) -> HTTPResponse {
 
     case ("GET", "/v1/art"):
         let size = q["size"] == "52" ? 52 : 400
-        guard let cg = image(for: q) else { return .notFound() }
+        guard let cg = image(for: q) else {
+            log("art \(q["id"] ?? q["title"] ?? "?") size \(size) -> not found")
+            return .notFound()
+        }
         return HTTPResponse(contentType: "application/octet-stream", body: ImagePrep.rgb565(cg, width: size, height: size))
 
     case ("GET", "/v1/bg"):
