@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import ImageIO
 @testable import CompanionCore
 
 final class ImagePrepTests: XCTestCase {
@@ -61,5 +62,24 @@ final class ImagePrepTests: XCTestCase {
         for y in 0..<90 { for x in 1..<160 { biggestStep = max(biggestStep, abs(px[y * 160 + x].g - px[y * 160 + x - 1].g)) } }
         XCTAssertLessThanOrEqual(biggestStep, 8)
         XCTAssertLessThan(px[45 * 160 + 5].g, px[45 * 160 + 154].g)
+    }
+
+    func testSmallBackgroundIs16x9() {
+        let img = image([UInt8](repeating: 200, count: 8 * 8 * 4), width: 8, height: 8)
+        XCTAssertEqual(ImagePrep.smallBackground(img).count, 16 * 9 * 2)
+    }
+
+    func testJPEGIsSmallBaselineAndRightSize() throws {
+        var raw = [UInt8]()
+        for y in 0..<64 { for x in 0..<64 { raw += [UInt8(x * 4), UInt8(y * 4), 128, 255] } }
+        let jpeg = try XCTUnwrap(ImagePrep.jpeg(image(raw, width: 64, height: 64), size: 400))
+        XCTAssertEqual([UInt8](jpeg.prefix(2)), [0xFF, 0xD8])
+        XCTAssertLessThan(jpeg.count, 40_000)
+        // progressive JPEGs (SOF2 marker) cannot be decoded on the tablet
+        XCTAssertNil(jpeg.range(of: Data([0xFF, 0xC2])))
+        let src = try XCTUnwrap(CGImageSourceCreateWithData(jpeg as CFData, nil))
+        let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(src, 0, nil))
+        XCTAssertEqual(decoded.width, 400)
+        XCTAssertEqual(decoded.height, 400)
     }
 }

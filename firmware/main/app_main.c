@@ -9,6 +9,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "lyrics.h"
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
 #include "ams_ble.h"
@@ -17,7 +18,6 @@
 #include "playback_clock.h"
 #include "source_arbiter.h"
 #include "standby.h"
-#include "text_util.h"
 #include "ui.h"
 
 #define BRIGHTNESS_ON 80
@@ -32,17 +32,14 @@ static source_arbiter_t s_arb;
 static standby_t s_standby;
 static bool s_dirty = true;
 
-/* Playlist shown in the right column (guarded by s_mx). */
-static companion_list_t *s_list;
-static bool s_list_dirty;
-static bool s_list_missing;         /* the last request got no answer from the Mac */
+/* Lyrics of the current track (guarded by s_mx). */
+static companion_track_t *s_track;
+static bool s_track_dirty;
+static bool s_track_missing;        /* the last request got no answer from the Mac */
 static uint32_t s_req_seq;          /* id of the latest companion request; older answers are dropped */
-static now_playing_t s_req_np;      /* the track that request was about */
-static played_set_t s_played;
-static char s_playlist_name[128];
-static bool s_have_cur_id;
-static uint32_t s_cur_id;
-static ui_row_t *s_rows;
+
+/* The highlighted line changes this long before its timestamp, to make up for drawing time. */
+#define LYRIC_LEAD_S 0.25f
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -105,101 +102,46 @@ static void on_touch(lv_event_t *e)
 
 /* ---- companion callbacks (worker task) ---- */
 
-static void on_list(uint32_t seq, companion_list_t *list)
+static void on_track(uint32_t seq, companion_track_t *info)
 {
-    now_playing_t np;
-    bool has_id = false;
-    uint32_t id = 0;
-
     xSemaphoreTake(s_mx, portMAX_DELAY);
     if (seq != s_req_seq) {              /* the track changed while we were asking */
         xSemaphoreGive(s_mx);
-        companion_list_free(list);
+        companion_track_free(info);
         return;
     }
-    const char *name = (list && list->has_playlist) ? list->name : "";
-    if (strcmp(name, s_playlist_name) != 0) {
-        played_set_clear(&s_played);     /* a new playlist starts a new session */
-        snprintf(s_playlist_name, sizeof s_playlist_name, "%s", name);
-        s_have_cur_id = false;
-    }
-    has_id = list && list->has_track_id;
-    id = has_id ? list->track_id : 0;
-    if (s_have_cur_id && (!has_id || id != s_cur_id)) played_set_add(&s_played, s_cur_id);
-    s_have_cur_id = has_id;
-    s_cur_id = id;
-
-    companion_list_t *old = s_list;
-    s_list = list;
-    s_list_dirty = true;
-    s_list_missing = (list == NULL);
-    np = s_req_np;
+    companion_track_t *old = s_track;
+    s_track = info;
+    s_track_dirty = true;
+    s_track_missing = (info == NULL);
     xSemaphoreGive(s_mx);
-    ESP_LOGI(TAG, "list for request %u: %s, %d tracks, track id %s", (unsigned)seq,
-             list ? (list->has_playlist ? list->name : "no playlist") : "Mac unreachable", list ? list->n : 0,
-             has_id ? "known" : "unknown");
-
-    companion_list_free(old);
-    companion_request_cover(has_id, id, &np, seq);
+    ESP_LOGI(TAG, "track info %u: %s", (unsigned)seq,
+             !info ? "Mac unreachable" : !info->has_lyrics ? "no lyrics" : info->synced ? "synced lyrics" : "plain lyrics");
+    companion_track_free(old);
 }
 
-static void on_cover(uint32_t seq, uint8_t *cover, uint8_t *bg)
+static void on_cover(uint32_t seq, uint8_t *cover)
 {
     xSemaphoreTake(s_mx, portMAX_DELAY);
     bool current = (seq == s_req_seq);
     xSemaphoreGive(s_mx);
-    ESP_LOGI(TAG, "cover for request %u: cover=%s background=%s%s", (unsigned)seq, cover ? "yes" : "no",
-             bg ? "yes" : "no", current ? "" : " (stale, dropped)");
+    ESP_LOGI(TAG, "cover %u: %s%s", (unsigned)seq, cover ? "ok" : "none", current ? "" : " (stale, dropped)");
     if (current && bsp_display_lock(1000)) {
         ui_set_cover(cover, UI_COVER_PX, UI_COVER_PX);
-        ui_set_background(bg, UI_BG_W, UI_BG_H);
         bsp_display_unlock();
     }
     companion_free(cover);
-    companion_free(bg);
 }
 
-static void on_thumb(uint32_t track_id, uint8_t *px)
+/* Shows the lyrics and background that just arrived. Call with the display lock held. */
+static void render_track(void)
 {
-    if (px && bsp_display_lock(1000)) {
-        ui_set_thumb(track_id, px);
-        bsp_display_unlock();
-    }
-    companion_free(px);
-}
-
-/* Runs on the LVGL task. */
-static void on_thumb_needed(uint32_t row_id)
-{
-    companion_request_thumb(row_id);
-}
-
-/* Fills the right column. Call with the display lock held. */
-static void render_list(const now_playing_t *np)
-{
-    char pos[48] = "";
-    if (np->queue_index >= 0 && np->queue_count > 0) {
-        snprintf(pos, sizeof pos, "Brano %d di %d", np->queue_index + 1, np->queue_count);
-    }
-
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    s_list_dirty = false;
-    if (!s_list || !s_list->has_playlist || !s_rows) {
-        xSemaphoreGive(s_mx);
-        ui_set_list(pos, "", np->shuffle, NULL, 0);
-        return;
-    }
-    int n = s_list->n < UI_MAX_ROWS ? s_list->n : UI_MAX_ROWS;
-    for (int i = 0; i < n; i++) {
-        const companion_track_t *t = &s_list->tracks[i];
-        bool current = !s_list->ordered && s_list->has_track_id && t->id == s_list->track_id;
-        s_rows[i] = (ui_row_t){.id = t->id, .title = t->title, .artist = t->artist, .duration_s = t->duration_s,
-                               .current = current,
-                               .played = !s_list->ordered && played_set_has(&s_played, t->id)};
-    }
-    /* Only a queue we know to be in playlist order may be called "next". */
-    if (s_list->ordered) ui_set_list("Prossimi brani", s_list->name, false, s_rows, n);
-    else ui_set_list(s_list->name, pos, np->shuffle, s_rows, n);
+    s_track_dirty = false;
+    if (s_track && s_track->has_lyrics) ui_set_lyrics(s_track->lines, s_track->n, s_track->synced);
+    else ui_set_lyrics(NULL, 0, false);
+    if (s_track && s_track->has_bg) ui_set_background((const uint8_t *)s_track->bg, COMPANION_BG_W, COMPANION_BG_H);
+    else if (s_track) ui_set_background(NULL, 0, 0);
     xSemaphoreGive(s_mx);
 }
 
@@ -213,11 +155,8 @@ static void ui_task(void *arg)
     /* what the last companion request was made for */
     uint32_t asked_seq = UINT32_MAX;
     source_t asked_src = SRC_NONE;
-    bool asked_shuffle = false;
-    int asked_count = -2;
-    int64_t changed_ms = 0;
+    int64_t changed_ms = 0, retry_ms = 0;
     bool ask_pending = false;
-    int64_t retry_ms = 0;
 
     for (;;) {
         int64_t t = now_ms();
@@ -229,42 +168,50 @@ static void ui_task(void *arg)
         else if (shown.state == PB_PLAYING) shown.state = PB_PAUSED;   /* source went away */
         standby_on_playback(&s_standby, src == SRC_NONE ? PB_STOPPED : shown.state, t);
         bool on = standby_screen_on(&s_standby, t);
-        bool list_dirty = s_list_dirty;
-        bool list_missing = s_list_missing;
+        bool track_dirty = s_track_dirty;
+        bool track_missing = s_track_missing;
         xSemaphoreGive(s_mx);
 
-        /* A track change arrives as several separate updates (artist, album, title):
+        /* A track change arrives as several separate updates (artist, album, title, duration):
          * wait until they settle before asking the Mac about it. */
-        if (src != SRC_NONE && (shown.track_seq != asked_seq || src != asked_src ||
-                                shown.shuffle != asked_shuffle || shown.queue_count != asked_count)) {
+        bool new_track = false;
+        if (src != SRC_NONE && (shown.track_seq != asked_seq || src != asked_src)) {
             asked_seq = shown.track_seq;
             asked_src = src;
-            asked_shuffle = shown.shuffle;
-            asked_count = shown.queue_count;
             changed_ms = t;
             ask_pending = true;
+            new_track = true;
         }
         /* The Mac was unreachable last time: ask again once it is back. */
-        if (list_missing && !ask_pending && src != SRC_NONE && companion_available() && t - retry_ms > 3000) {
+        if (track_missing && !ask_pending && src != SRC_NONE && companion_available() && t - retry_ms > 5000) {
             retry_ms = t;
             ask_pending = true;
         }
-        if (ask_pending && t - changed_ms >= 400 && shown.title[0]) {
+        if (ask_pending && t - changed_ms >= 500 && shown.title[0]) {
             ask_pending = false;
             xSemaphoreTake(s_mx, portMAX_DELAY);
             uint32_t seq = ++s_req_seq;
-            s_req_np = shown;
             xSemaphoreGive(s_mx);
-            companion_request_list(&shown, seq);
+            companion_request_track(&shown, seq);
         }
 
+        float elapsed = playback_elapsed_s(&shown, t);
         if (bsp_display_lock(100)) {
             if (dirty) {
                 ui_set_now_playing(&shown, src);
                 shown_src = src;
             }
-            if (dirty || list_dirty) render_list(&shown);
-            ui_tick(playback_elapsed_s(&shown, t), shown.duration_s);
+            if (new_track) {               /* the old cover and lyrics belong to the previous track */
+                ui_set_cover(NULL, 0, 0);
+                ui_clear_lyrics();
+            }
+            if (track_dirty) render_track();
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            int line = (s_track && s_track->synced && !s_track_dirty)
+                           ? lyrics_current_line(s_track->times, s_track->n, elapsed + LYRIC_LEAD_S) : -2;
+            xSemaphoreGive(s_mx);
+            if (line != -2) ui_set_lyric_line(line);
+            ui_tick(elapsed, shown.duration_s);
             bsp_display_unlock();
         }
 
@@ -311,13 +258,10 @@ void app_main(void)
     bsp_display_lock(0);
     bsp_display_rotate(disp, LV_DISPLAY_ROTATION_90);
     ui_init(on_ui_cmd);
-    ui_on_thumb_needed(on_thumb_needed);
     lv_indev_add_event_cb(bsp_display_get_input_dev(), on_touch, LV_EVENT_PRESSED, NULL);
     bsp_display_unlock();
 
-    s_rows = heap_caps_calloc(UI_MAX_ROWS, sizeof(ui_row_t), MALLOC_CAP_SPIRAM);
-    played_set_clear(&s_played);
-    static const companion_callbacks_t companion_cb = {.on_list = on_list, .on_cover = on_cover, .on_thumb = on_thumb};
+    static const companion_callbacks_t companion_cb = {.on_track = on_track, .on_cover = on_cover};
     ESP_ERROR_CHECK(companion_start(&companion_cb));
 
     ESP_ERROR_CHECK(ams_ble_start(on_ams_update, on_ams_conn));

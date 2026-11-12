@@ -19,13 +19,10 @@ final class ArtworkStore {
         if let hit = cache[key] { lock.unlock(); return hit }
         lock.unlock()
 
+        // The artwork in the user's own library is the exact one they see on the phone.
         var found: CGImage?
-        var t = title, a = artist
-        if let id = trackID {
-            found = bridge.artwork(trackID: id)
-            if found == nil, let track = bridge.track(id: id) { t = track.title; a = track.artist }
-        }
-        if found == nil, !t.isEmpty { found = searchCatalogue(title: t, artist: a) }
+        if let id = trackID ?? bridge.findTrackID(title: title, artist: artist) { found = bridge.artwork(trackID: id) }
+        if found == nil, !title.isEmpty { found = searchCatalogue(title: title, artist: artist) }
         guard let image = found else { return nil }
 
         lock.lock()
@@ -56,9 +53,9 @@ final class ArtworkStore {
         guard let url = parts.url, let data = fetch(url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let results = json["results"] as? [[String: Any]] else { return nil }
-        let wanted = PlaylistMatcher.normalize(artist)
+        let wanted = normalizedForMatching(artist)
         let sameArtist = results.first { r in
-            PlaylistMatcher.normalize((r["artistName"] as? String) ?? "") == wanted
+            normalizedForMatching((r["artistName"] as? String) ?? "") == wanted
         }
         let pick: [String: Any]? = sameArtist ?? results.first
         guard let small = pick?["artworkUrl100"] as? String else { return nil }

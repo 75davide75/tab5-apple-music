@@ -10,8 +10,9 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_timer.h"
 #include "esp_wifi.h"
+#include "jpeg_decoder.h"
+#include "lyrics.h"
 #include "mdns.h"
 #include "nvs.h"
 #include "text_util.h"
@@ -23,40 +24,38 @@
 #define WIFI_PASSWORD ""
 #endif
 
-#define COVER_BYTES (400 * 400 * 2)
-#define THUMB_BYTES (52 * 52 * 2)
-#define BG_BYTES (160 * 90 * 2)
+#define COVER_BYTES (COMPANION_COVER_PX * COMPANION_COVER_PX * 2)
 #define REDISCOVER_MS 10000
-
-/* Measured on this Tab5 (factory ESP32-C6 firmware, esp_hosted host 2.13): the Wi-Fi
- * link delivers about 4 kB/s, so a raw 320 kB cover would block the worker for over a
- * minute. Image downloads stay off until that is solved (see README, "Limiti noti"). */
-#define FETCH_IMAGES 0
+/* Measured on this Tab5 (factory ESP32-C6 firmware): the Wi-Fi link delivers only
+ * about 4 kB/s, so answers are kept small and timeouts long. */
+#define HTTP_TIMEOUT_MS 15000
+#define MAX_JPEG_BYTES (96 * 1024)
+#define MAX_LINES 300
 
 static const char *TAG = "companion";
 
-typedef enum { JOB_LIST, JOB_COVER, JOB_THUMB } job_kind_t;
+typedef enum { JOB_TRACK, JOB_COVER } job_kind_t;
 typedef struct {
     job_kind_t kind;
-    uint32_t seq, track_id;
-    bool has_track_id;
+    uint32_t seq;
     char *query;   /* heap; title/artist/album already URL-encoded */
 } job_t;
 
 static companion_callbacks_t s_cb;
-static QueueHandle_t s_urgent, s_thumbs;
+static QueueHandle_t s_jobs;
 static volatile bool s_have_ip, s_available;
 static char s_base[64];
 static int s_failures;
 
 void companion_free(void *p) { heap_caps_free(p); }
 
-void companion_list_free(companion_list_t *list)
+void companion_track_free(companion_track_t *t)
 {
-    if (!list) return;
-    if (list->json) cJSON_Delete(list->json);
-    heap_caps_free(list->tracks);
-    heap_caps_free(list);
+    if (!t) return;
+    if (t->json) cJSON_Delete(t->json);
+    heap_caps_free(t->lines);
+    heap_caps_free(t->times);
+    heap_caps_free(t);
 }
 
 bool companion_available(void) { return s_available; }
@@ -145,103 +144,93 @@ static uint8_t *http_get(const char *path, size_t cap, size_t *len, int timeout_
     return body.buf;
 }
 
-static uint8_t *get_pixels(const char *path, size_t bytes, int timeout_ms)
-{
-    size_t len = 0;
-    uint8_t *px = http_get(path, bytes, &len, timeout_ms);
-    if (px && len != bytes) {
-        ESP_LOGW(TAG, "GET %.60s: %u bytes, expected %u", path, (unsigned)len, (unsigned)bytes);
-        heap_caps_free(px);
-        px = NULL;
-    }
-    return px;
-}
-
 /* ---- jobs ---- */
 
-static companion_list_t *parse_list(char *text)
+static companion_track_t *parse_track(char *text)
 {
     cJSON *root = cJSON_Parse(text);
     if (!root) return NULL;
-    companion_list_t *l = heap_caps_calloc(1, sizeof *l, MALLOC_CAP_SPIRAM);
-    if (!l) { cJSON_Delete(root); return NULL; }
-    l->json = root;
+    companion_track_t *t = heap_caps_calloc(1, sizeof *t, MALLOC_CAP_SPIRAM);
+    if (!t) { cJSON_Delete(root); return NULL; }
+    t->json = root;
 
-    const cJSON *pl = cJSON_GetObjectItem(root, "playlist");
-    if (cJSON_IsObject(pl)) {
-        const cJSON *name = cJSON_GetObjectItem(pl, "name");
-        l->has_playlist = true;
-        snprintf(l->name, sizeof l->name, "%s", cJSON_IsString(name) ? name->valuestring : "");
-        l->count = cJSON_GetObjectItem(pl, "count") ? cJSON_GetObjectItem(pl, "count")->valueint : 0;
+    const cJSON *bg = cJSON_GetObjectItem(root, "bg");
+    if (cJSON_IsString(bg)) {
+        t->has_bg = hex_to_rgb565(bg->valuestring, t->bg, COMPANION_BG_W * COMPANION_BG_H) ==
+                    COMPANION_BG_W * COMPANION_BG_H;
     }
-    const cJSON *cur = cJSON_GetObjectItem(root, "current");
-    l->current = cJSON_IsNumber(cur) ? cur->valueint : 0;
-    l->ordered = cJSON_IsTrue(cJSON_GetObjectItem(root, "ordered"));
-    const cJSON *tid = cJSON_GetObjectItem(root, "track_id");
-    if (cJSON_IsNumber(tid)) { l->has_track_id = true; l->track_id = (uint32_t)tid->valuedouble; }
 
-    const cJSON *tracks = cJSON_GetObjectItem(root, "tracks");
-    int n = cJSON_IsArray(tracks) ? cJSON_GetArraySize(tracks) : 0;
-    if (n > 0) l->tracks = heap_caps_calloc(n, sizeof *l->tracks, MALLOC_CAP_SPIRAM);
-    const cJSON *t;
-    cJSON_ArrayForEach(t, tracks) {
-        if (!l->tracks || l->n >= n) break;
-        const cJSON *id = cJSON_GetObjectItem(t, "id"), *title = cJSON_GetObjectItem(t, "title");
-        const cJSON *artist = cJSON_GetObjectItem(t, "artist"), *dur = cJSON_GetObjectItem(t, "duration_s");
-        if (!cJSON_IsNumber(id)) continue;
-        companion_track_t *o = &l->tracks[l->n++];
-        o->id = (uint32_t)id->valuedouble;
-        o->title = cJSON_IsString(title) ? title->valuestring : "";
-        o->artist = cJSON_IsString(artist) ? artist->valuestring : "";
-        o->duration_s = cJSON_IsNumber(dur) ? (float)dur->valuedouble : 0;
+    const cJSON *lyrics = cJSON_GetObjectItem(root, "lyrics");
+    const cJSON *lines = cJSON_IsObject(lyrics) ? cJSON_GetObjectItem(lyrics, "lines") : NULL;
+    int n = cJSON_IsArray(lines) ? cJSON_GetArraySize(lines) : 0;
+    if (n > MAX_LINES) n = MAX_LINES;
+    if (n > 0) {
+        t->lines = heap_caps_calloc(n, sizeof *t->lines, MALLOC_CAP_SPIRAM);
+        t->times = heap_caps_calloc(n, sizeof *t->times, MALLOC_CAP_SPIRAM);
     }
-    return l;
+    if (t->lines && t->times) {
+        const cJSON *line;
+        float last = -1;
+        cJSON_ArrayForEach(line, lines) {
+            if (t->n >= n) break;
+            const cJSON *time = cJSON_GetArrayItem(line, 0), *words = cJSON_GetArrayItem(line, 1);
+            if (!cJSON_IsNumber(time) || !cJSON_IsString(words)) continue;
+            float at = (float)time->valuedouble;
+            if (at < last) at = last;          /* keep times ascending whatever we are sent */
+            last = at;
+            t->times[t->n] = at;
+            t->lines[t->n] = words->valuestring;
+            t->n++;
+        }
+        t->has_lyrics = t->n > 0;
+        t->synced = t->has_lyrics && cJSON_IsTrue(cJSON_GetObjectItem(lyrics, "synced"));
+    }
+    return t;
 }
 
-static void art_path(char *out, size_t cap, const char *endpoint, const job_t *j, int size)
+static uint8_t *decode_cover(const uint8_t *jpeg, size_t len)
 {
-    int n = j->has_track_id ? snprintf(out, cap, "%s?id=%u", endpoint, (unsigned)j->track_id)
-                            : snprintf(out, cap, "%s?%s", endpoint, j->query ? j->query : "");
-    if (size && n > 0 && (size_t)n < cap) snprintf(out + n, cap - n, "&size=%d", size);
+    uint8_t *out = heap_caps_malloc(COVER_BYTES, MALLOC_CAP_SPIRAM);
+    if (!out) return NULL;
+    esp_jpeg_image_cfg_t cfg = {
+        .indata = (uint8_t *)jpeg, .indata_size = len, .outbuf = out, .outbuf_size = COVER_BYTES,
+        .out_format = JPEG_IMAGE_FORMAT_RGB565, .out_scale = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t info = {0};
+    esp_err_t err = esp_jpeg_decode(&cfg, &info);
+    if (err != ESP_OK || info.width != COMPANION_COVER_PX || info.height != COMPANION_COVER_PX) {
+        ESP_LOGW(TAG, "cover decode failed: %s, %ux%u", esp_err_to_name(err), info.width, info.height);
+        heap_caps_free(out);
+        return NULL;
+    }
+    return out;
 }
 
 static void run_job(job_t *j)
 {
     char path[1300];
     switch (j->kind) {
-    case JOB_LIST: {
-        companion_list_t *list = NULL;
+    case JOB_TRACK: {
+        companion_track_t *info = NULL;
         if (s_available) {
-            snprintf(path, sizeof path, "/v1/resolve?%s", j->query ? j->query : "");
-            char *text = (char *)http_get(path, 256 * 1024, NULL, 3000);
-            if (text) { list = parse_list(text); heap_caps_free(text); }
+            snprintf(path, sizeof path, "/v1/track?%s", j->query ? j->query : "");
+            char *text = (char *)http_get(path, 96 * 1024, NULL, HTTP_TIMEOUT_MS);
+            if (text) { info = parse_track(text); heap_caps_free(text); }
         }
-        if (s_cb.on_list) s_cb.on_list(j->seq, list);
-        else companion_list_free(list);
+        if (s_cb.on_track) s_cb.on_track(j->seq, info);
+        else companion_track_free(info);
         break;
     }
     case JOB_COVER: {
-        uint8_t *cover = NULL, *bg = NULL;
-        if (FETCH_IMAGES && s_available) {
-            art_path(path, sizeof path, "/v1/art", j, 400);
-            cover = get_pixels(path, COVER_BYTES, 8000);
-            if (cover) {
-                art_path(path, sizeof path, "/v1/bg", j, 0);
-                bg = get_pixels(path, BG_BYTES, 4000);
-            }
+        uint8_t *cover = NULL;
+        if (s_available) {
+            size_t len = 0;
+            snprintf(path, sizeof path, "/v1/cover.jpg?%s", j->query ? j->query : "");
+            uint8_t *jpeg = http_get(path, MAX_JPEG_BYTES, &len, HTTP_TIMEOUT_MS);
+            if (jpeg) { cover = decode_cover(jpeg, len); heap_caps_free(jpeg); }
         }
-        if (s_cb.on_cover) s_cb.on_cover(j->seq, cover, bg);
-        else { heap_caps_free(cover); heap_caps_free(bg); }
-        break;
-    }
-    case JOB_THUMB: {
-        uint8_t *px = NULL;
-        if (FETCH_IMAGES && s_available) {
-            snprintf(path, sizeof path, "/v1/art?id=%u&size=52", (unsigned)j->track_id);
-            px = get_pixels(path, THUMB_BYTES, 4000);
-        }
-        if (s_cb.on_thumb) s_cb.on_thumb(j->track_id, px);
-        else heap_caps_free(px);
+        if (s_cb.on_cover) s_cb.on_cover(j->seq, cover);
+        else heap_caps_free(cover);
         break;
     }
     }
@@ -288,7 +277,13 @@ static void worker(void *arg)
             last_discovery = xTaskGetTickCount();
         }
         job_t j;
-        if (xQueueReceive(s_urgent, &j, 0) == pdTRUE || xQueueReceive(s_thumbs, &j, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (xQueueReceive(s_jobs, &j, pdMS_TO_TICKS(200)) == pdTRUE) {
+            /* A newer track makes anything still waiting pointless: only its jobs are worth the slow link. */
+            job_t newer;
+            while (j.kind == JOB_COVER && xQueuePeek(s_jobs, &newer, 0) == pdTRUE && newer.seq != j.seq) {
+                free(j.query);
+                xQueueReceive(s_jobs, &j, 0);
+            }
             run_job(&j);
         }
     }
@@ -299,9 +294,8 @@ static void worker(void *arg)
 esp_err_t companion_start(const companion_callbacks_t *cb)
 {
     s_cb = *cb;
-    s_urgent = xQueueCreate(8, sizeof(job_t));
-    s_thumbs = xQueueCreate(96, sizeof(job_t));
-    if (!s_urgent || !s_thumbs) return ESP_ERR_NO_MEM;
+    s_jobs = xQueueCreate(8, sizeof(job_t));
+    if (!s_jobs) return ESP_ERR_NO_MEM;
 
     load_base();
     if (strlen(WIFI_SSID) == 0) {
@@ -329,32 +323,15 @@ static char *build_query(const now_playing_t *np)
     if (!url_encode(np->album, al, sizeof al)) al[0] = 0;
     char *q = malloc(1200);
     if (!q) return NULL;
-    int n = snprintf(q, 1200, "title=%.400s&artist=%.300s&album=%.300s&shuffle=%d", t, a, al, np->shuffle ? 1 : 0);
-    if (np->queue_index >= 0) n += snprintf(q + n, 1200 - n, "&index=%d", np->queue_index);
-    if (np->queue_count > 0) snprintf(q + n, 1200 - n, "&count=%d", np->queue_count);
+    snprintf(q, 1200, "title=%.400s&artist=%.300s&album=%.300s&duration=%.1f", t, a, al,
+             np->duration_s > 0 ? (double)np->duration_s : 0.0);
     return q;
 }
 
-static void push(QueueHandle_t q, job_t *j)
+void companion_request_track(const now_playing_t *np, uint32_t seq)
 {
-    if (xQueueSend(q, j, 0) != pdTRUE) free(j->query);
-}
-
-void companion_request_list(const now_playing_t *np, uint32_t seq)
-{
-    job_t j = {.kind = JOB_LIST, .seq = seq, .query = build_query(np)};
-    push(s_urgent, &j);
-}
-
-void companion_request_cover(bool has_track_id, uint32_t track_id, const now_playing_t *np, uint32_t seq)
-{
-    job_t j = {.kind = JOB_COVER, .seq = seq, .has_track_id = has_track_id, .track_id = track_id,
-               .query = has_track_id ? NULL : build_query(np)};
-    push(s_urgent, &j);
-}
-
-void companion_request_thumb(uint32_t track_id)
-{
-    job_t j = {.kind = JOB_THUMB, .track_id = track_id};
-    push(s_thumbs, &j);
+    job_t track = {.kind = JOB_TRACK, .seq = seq, .query = build_query(np)};
+    if (xQueueSend(s_jobs, &track, 0) != pdTRUE) free(track.query);
+    job_t cover = {.kind = JOB_COVER, .seq = seq, .query = build_query(np)};
+    if (xQueueSend(s_jobs, &cover, 0) != pdTRUE) free(cover.query);
 }

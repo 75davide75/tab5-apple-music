@@ -23,29 +23,8 @@ public struct Playlist: Sendable {
     }
 }
 
-/// What the Tab5 knows about the track playing on the iPhone.
-public struct Query: Sendable {
-    public let title: String
-    public let artist: String
-    public let album: String
-    public let index: Int?      // 0-based position in the queue, when known
-    public let count: Int?      // queue length, when known
-    public let shuffle: Bool
-
-    public init(title: String, artist: String, album: String, index: Int?, count: Int?, shuffle: Bool) {
-        self.title = title; self.artist = artist; self.album = album
-        self.index = index; self.count = count; self.shuffle = shuffle
-    }
-}
-
-public struct Match: Sendable {
-    public let playlist: Playlist
-    public let currentPosition: Int
-    /// True only when the phone's queue position is this track's position in the playlist,
-    /// i.e. the playlist order can be shown as "what plays next".
-    public let inOrder: Bool
-
-    public init(playlist: Playlist, currentPosition: Int, inOrder: Bool) {
-        self.playlist = playlist; self.currentPosition = currentPosition; self.inOrder = inOrder
-    }
+/// Case-, accent- and whitespace-insensitive form used to compare titles and artists.
+public func normalizedForMatching(_ s: String) -> String {
+    s.trimmingCharacters(in: .whitespacesAndNewlines)
+        .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
 }

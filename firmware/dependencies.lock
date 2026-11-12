@@ -132,6 +132,16 @@ dependencies:
     targets:
     - esp32p4
     version: 1.3.1
+  espressif/esp_jpeg:
+    component_hash: 47d19eac5f76fac06798c04f4d2579c7ab26fd33280ed10f43d8895175376bdf
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.3.2
   espressif/esp_lcd_ili9881c:
     component_hash: 0288df12755c95d406ccea245a427595f314df0b14a61846286d926ea6f3698e
     dependencies:
@@ -488,10 +498,11 @@ dependencies:
     version: 9.6.0~1
 direct_dependencies:
 - espressif/esp_hosted
+- espressif/esp_jpeg
 - espressif/esp_wifi_remote
 - espressif/m5stack_tab5
 - espressif/mdns
 - idf
-manifest_hash: 1db9bd0b27784cf9e0f12cd91a917a9dae6f8920c15a8ed16d76d63685b0b6ca
+manifest_hash: afbe39ef84c63a95d2da7e661c23fe728a53e484f77c8e093b1c6d9afcbf2bae
 target: esp32p4
 version: 2.0.0

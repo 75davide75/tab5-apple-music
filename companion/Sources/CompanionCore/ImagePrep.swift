@@ -1,5 +1,7 @@
 import CoreGraphics
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// Converts artwork into the raw pixel formats the Tab5 draws directly.
 public enum ImagePrep {
@@ -53,6 +55,36 @@ public enum ImagePrep {
         var out = [UInt8](repeating: 255, count: w * h * 4)
         for i in 0..<(w * h) { for c in 0..<3 { out[i * 4 + c] = UInt8(max(0, min(255, px[i * 3 + c] * gain))) } }
         return pack565(out)
+    }
+
+    /// The same wash reduced to 16x9 pixels: small enough for a slow link, and the
+    /// tablet scales it back up smoothly.
+    public static func smallBackground(_ image: CGImage) -> Data {
+        let full = [UInt8](blurredBackground(image))
+        var rgba = [UInt8](repeating: 255, count: 16 * 9 * 4)
+        for y in 0..<9 {
+            for x in 0..<16 {
+                let i = ((y * 10 + 5) * 160 + (x * 10 + 5)) * 2
+                let v = UInt16(full[i]) | (UInt16(full[i + 1]) << 8)
+                let o = (y * 16 + x) * 4
+                rgba[o] = UInt8((v >> 11) << 3); rgba[o + 1] = UInt8(((v >> 5) & 63) << 2); rgba[o + 2] = UInt8((v & 31) << 3)
+            }
+        }
+        return pack565(rgba)
+    }
+
+    /// A square baseline JPEG, for the tablet's software decoder.
+    public static func jpeg(_ image: CGImage, size: Int, quality: Double = 0.5) -> Data? {
+        var pixels = rgba(image, width: size, height: size, quality: .high)
+        let scaled: CGImage? = pixels.withUnsafeMutableBytes { raw in
+            CGContext(data: raw.baseAddress, width: size, height: size, bitsPerComponent: 8, bytesPerRow: size * 4,
+                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)?.makeImage()
+        }
+        guard let scaled else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, scaled, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? out as Data : nil
     }
 
     private static func boxBlur(_ src: inout [Float], _ dst: inout [Float], w: Int, h: Int, radius: Int,

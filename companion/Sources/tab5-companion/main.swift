@@ -4,39 +4,28 @@ import Foundation
 
 let bridge = MusicBridge()
 let artwork = ArtworkStore(bridge: bridge)
-let matcher = PlaylistMatcher()
-let matcherLock = NSLock()
+let lyricsStore = LyricsStore()
 
 func image(for q: [String: String]) -> CGImage? {
-    artwork.image(trackID: q["id"].flatMap { UInt32($0) }, title: q["title"] ?? "", artist: q["artist"] ?? "",
-                  album: q["album"] ?? "")
+    artwork.image(trackID: nil, title: q["title"] ?? "", artist: q["artist"] ?? "", album: q["album"] ?? "")
 }
 
 func handle(_ request: HTTPRequest) -> HTTPResponse {
     let q = request.query
     switch (request.method, request.path) {
-    case ("GET", "/v1/resolve"):
-        let query = Query(title: q["title"] ?? "", artist: q["artist"] ?? "", album: q["album"] ?? "",
-                          index: q["index"].flatMap { Int($0) }, count: q["count"].flatMap { Int($0) },
-                          shuffle: q["shuffle"] == "1")
-        let lists = bridge.playlists()
-        matcherLock.lock()
-        let match = matcher.match(query, in: lists)
-        matcherLock.unlock()
-        log("resolve '\(query.title)' -> \(match?.playlist.name ?? "no playlist")")
-        return HTTPResponse(body: ResolveResponse.encode(match: match))
+    case ("GET", "/v1/track"):
+        // Lyrics and background colours in one small answer: every request is slow on the tablet's link.
+        let lyrics = lyricsStore.lyrics(title: q["title"] ?? "", artist: q["artist"] ?? "", album: q["album"] ?? "",
+                                        duration: Double(q["duration"] ?? "") ?? 0)
+        let background = image(for: q).map { ImagePrep.smallBackground($0) }
+        return HTTPResponse(body: TrackInfo.encode(lyrics: lyrics, background: background))
 
-    case ("GET", "/v1/art"):
-        let size = q["size"] == "52" ? 52 : 400
-        guard let cg = image(for: q) else {
-            log("art \(q["id"] ?? q["title"] ?? "?") size \(size) -> not found")
+    case ("GET", "/v1/cover.jpg"):
+        guard let cg = image(for: q), let jpeg = ImagePrep.jpeg(cg, size: 400) else {
+            log("cover '\(q["title"] ?? "?")' -> not found")
             return .notFound()
         }
-        return HTTPResponse(contentType: "application/octet-stream", body: ImagePrep.rgb565(cg, width: size, height: size))
-
-    case ("GET", "/v1/bg"):
-        guard let cg = image(for: q) else { return .notFound() }
-        return HTTPResponse(contentType: "application/octet-stream", body: ImagePrep.blurredBackground(cg))
+        return HTTPResponse(contentType: "image/jpeg", body: jpeg)
 
     default:
         return .notFound()

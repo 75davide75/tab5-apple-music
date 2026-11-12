@@ -119,10 +119,13 @@ final class MusicBridge {
         }
     }
 
-    /// Title/artist/album of a library track, used to look artwork up online when Music has none.
-    func track(id: UInt32) -> Track? {
+    /// Library id of a track the user has in one of their playlists.
+    func findTrackID(title: String, artist: String) -> UInt32? {
+        let t = normalizedForMatching(title), a = normalizedForMatching(artist)
         for p in playlists() {
-            if let t = p.tracks.first(where: { $0.id == id }) { return t }
+            if let hit = p.tracks.first(where: { normalizedForMatching($0.title) == t && normalizedForMatching($0.artist) == a }) {
+                return hit.id
+            }
         }
         return nil
     }
