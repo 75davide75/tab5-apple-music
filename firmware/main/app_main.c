@@ -96,6 +96,32 @@ static void on_ui_cmd(ui_cmd_t cmd, float seek_s)
     }
 }
 
+/* Drawing-speed report: how long screen redraws take, logged every few seconds while
+ * something is moving. Slow redraws are what makes scrolling look jerky. */
+static void on_render(lv_event_t *e)
+{
+    static int64_t start_us, report_us;
+    static int frames, slow;
+    static int64_t total_us, worst_us;
+    int64_t now = esp_timer_get_time();
+    if (lv_event_get_code(e) == LV_EVENT_RENDER_START) {
+        start_us = now;
+        return;
+    }
+    int64_t took = now - start_us;
+    frames++;
+    total_us += took;
+    if (took > worst_us) worst_us = took;
+    if (took > 50000) slow++;
+    if (now - report_us > 5000000) {
+        ESP_LOGI(TAG, "render: %d frames, avg %d ms, worst %d ms, %d over 50 ms", frames,
+                 (int)(total_us / frames / 1000), (int)(worst_us / 1000), slow);
+        report_us = now;
+        frames = slow = 0;
+        total_us = worst_us = 0;
+    }
+}
+
 /* Runs on the LVGL task: a touch on the dark screen only wakes it. */
 static void on_touch(lv_event_t *e)
 {
@@ -309,6 +335,8 @@ void app_main(void)
     bsp_display_lock(0);
     bsp_display_rotate(disp, LV_DISPLAY_ROTATION_90);
     ui_init(on_ui_cmd);
+    lv_display_add_event_cb(disp, on_render, LV_EVENT_RENDER_START, NULL);
+    lv_display_add_event_cb(disp, on_render, LV_EVENT_RENDER_READY, NULL);
     lv_indev_add_event_cb(bsp_display_get_input_dev(), on_touch, LV_EVENT_PRESSED, NULL);
     bsp_display_unlock();
 

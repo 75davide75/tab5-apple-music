@@ -1,3 +1,5 @@
+#include "esp_log.h"
+#include "esp_timer.h"
 #include "bg_scale.h"
 #include "ui.h"
 #include <stdio.h>
@@ -29,6 +31,9 @@ static uint8_t *s_bg_buf, *s_cover_buf;
 #define BG_SRC_MAX (64 * 36)
 static uint16_t s_bg_src[BG_SRC_MAX];       /* the small colour image last given, kept for redraws */
 static int s_bg_src_w, s_bg_src_h;
+/* The background is redrawn from ui_tick, never from ui_init: the main task that runs ui_init
+ * has its stack in the chip's slow low-power RAM, where this redraw took 12 seconds. */
+static bool s_bg_dirty;
 static int s_nlines, s_cur_line = -1;
 static bool s_synced, s_lyrics_layout;
 static ui_cmd_cb_t s_on_cmd;
@@ -127,8 +132,10 @@ static void render_background(void)
     /* Narrower than the cover and pushed down, so the shadow falls mostly below it. */
     bg_shadow_t shadow = { .x = cover_x + 20, .y = cover_y + 36, .w = cover - 40, .h = cover - 16,
                            .radius = UI_COVER_RADIUS, .blur = 90, .opa255 = 72 };
+    int64_t began = esp_timer_get_time();
     bool ok = bg_upscale(has ? s_bg_src : flat, has ? s_bg_src_w : 2, has ? s_bg_src_h : 2,
                          (uint16_t *)s_bg_buf, UI_W, UI_H, has ? 255 - UI_OPA_VEIL : 255, &shadow);
+    ESP_LOGI("ui", "background drawn in %d ms", (int)((esp_timer_get_time() - began) / 1000));
     if (!ok) {
         lv_obj_set_hidden(s_bg, true);
         return;
@@ -178,7 +185,7 @@ static void apply_layout(bool lyrics)
         lv_obj_set_pos(s_btn[i], cx + (i - 1) * step - UI_BTN / 2, cy - UI_BTN / 2);
     }
     lv_obj_set_hidden(s_lyrics, !lyrics);
-    render_background();        /* the cover moved, and its shadow with it */
+    s_bg_dirty = true;          /* the cover moved, and its shadow with it */
 }
 
 /* ---- lyrics ---- */
@@ -262,7 +269,7 @@ void ui_set_background(const uint8_t *rgb565, int w, int h)
         s_bg_src_w = w;
         s_bg_src_h = h;
     }
-    render_background();
+    s_bg_dirty = true;
 }
 
 /* ---- now playing ---- */
@@ -289,6 +296,10 @@ void ui_set_now_playing(const now_playing_t *np, source_t src)
 
 void ui_tick(float elapsed_s, float duration_s)
 {
+    if (s_bg_dirty) {
+        s_bg_dirty = false;
+        render_background();
+    }
     char l[8], r[10];
     s_duration = duration_s;
     if (duration_s > 0) {

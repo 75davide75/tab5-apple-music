@@ -45,3 +45,7 @@ CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH=y
 
 # Small TCP receive window: the link to the ESP32-C6 drops packets that arrive in bursts
 CONFIG_LWIP_TCP_WND_DEFAULT=2440
+
+# Rotating the picture for the landscape screen in software took ~0.6 s per full frame;
+# the P4's PPA hardware does it in a fraction of that (full redraw 722 ms -> ~140 ms).
+CONFIG_LVGL_PORT_ENABLE_PPA=y
