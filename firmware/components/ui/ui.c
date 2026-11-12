@@ -223,9 +223,9 @@ void ui_set_lyrics(const char *const *lines, int n, bool synced)
 }
 
 /* Moving the lyrics redraws most of the screen, which this tablet manages about ten times a
- * second (measured: 96 ms per frame). A gliding scroll at that rate looks jerky, so the text
- * steps to the new line in a single frame instead. Set to LV_ANIM_ON to glide again. */
-#define LYRIC_SCROLL_ANIM LV_ANIM_OFF
+ * second (measured: 96 ms per frame), so the glide is not perfectly smooth. Stepping in one
+ * frame (LV_ANIM_OFF) was tried and the owner preferred the glide. */
+#define LYRIC_SCROLL_ANIM LV_ANIM_ON
 
 void ui_set_lyric_line(int index)
 {
