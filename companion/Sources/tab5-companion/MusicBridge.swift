@@ -1,6 +1,7 @@
 import AppKit
 import CompanionCore
 import Foundation
+import ObjCGuard
 import ScriptingBridge
 
 // The parts of Music.app's scripting interface we use.
@@ -62,6 +63,19 @@ final class MusicBridge {
 
     private var refreshing = false
 
+    /// Runs a block of ScriptingBridge calls. Music quitting or changing its lists mid-read
+    /// raises an Objective-C exception, which would otherwise kill the process; here it
+    /// just yields `fallback`.
+    private func guarded<T>(_ what: String, _ fallback: T, _ body: () -> T) -> T {
+        var result = fallback
+        var reason: NSString?
+        if !tab5_try({ result = body() }, &reason) {
+            log("\(what) interrupted: \(reason ?? "unknown")")
+            return fallback
+        }
+        return result
+    }
+
     /// The user's playlists. Answers from the cache straight away and refreshes it in the
     /// background once it is older than a minute; only the very first call waits.
     func playlists() -> [Playlist] {
@@ -92,10 +106,14 @@ final class MusicBridge {
     }
 
     private func loadPlaylists() -> [Playlist] {
+        guarded("playlist load", []) { readPlaylists() }
+    }
+
+    private func readPlaylists() -> [Playlist] {
         guard let app, let lists = (app as MusicApplicationSB).userPlaylists?() else { return [] }
         let started = Date()
         var result: [Playlist] = []
-        for case let p as SBObject in lists {
+        for case let p as SBObject in lists.get() ?? [] {
             let pl = p as MusicPlaylistSB
             guard let name = pl.name, let pid = pl.persistentID, let tracks = pl.tracks?() else { continue }
             let names: [String] = column(tracks, #selector(getter: MusicTrackSB.name))
@@ -118,12 +136,12 @@ final class MusicBridge {
 
     /// Artwork stored in the Music library for a track, if any.
     func artwork(trackID: UInt32) -> CGImage? {
-        queue.sync {
+        queue.sync { guarded("artwork read", nil) { () -> CGImage? in
             guard let app, let all = (app as MusicApplicationSB).playlists?(),
                   let library = all.firstObject as? SBObject,
                   let tracks = (library as MusicPlaylistSB).tracks?() else { return nil }
             let found = tracks.filtered(using: NSPredicate(format: "databaseID == %d", Int(trackID)))
-            guard let track = (found as? [SBObject])?.first,
+            guard let track = found.first as? SBObject,
                   let art = (track as MusicTrackSB).artworks?().firstObject as? SBObject else { return nil }
             let a = art as MusicArtworkSB
             if let image = a.data, let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) { return cg }
@@ -131,12 +149,12 @@ final class MusicBridge {
                 return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
             }
             return nil
-        }
+        } }
     }
 
     /// What Music on this Mac is playing. Never launches Music: when it is closed it is simply "stopped".
     func playerState() -> MacState {
-        queue.sync {
+        queue.sync { guarded("player state", MacState.stopped) { () -> MacState in
             guard let app, app.isRunning else { return .stopped }
             let music = app as MusicApplicationSB
             let state: MacState.Playback
@@ -149,11 +167,11 @@ final class MusicBridge {
             let t = track as MusicTrackSB
             return MacState(state: state, title: t.name ?? "", artist: t.artist ?? "", album: t.album ?? "",
                             durationS: t.duration ?? 0, elapsedS: music.playerPosition ?? 0)
-        }
+        } }
     }
 
     func perform(_ command: MacCommand) {
-        queue.sync {
+        queue.sync { guarded("command", ()) {
             guard let app, app.isRunning else { return }
             let music = app as MusicApplicationSB
             switch command {
@@ -162,7 +180,7 @@ final class MusicBridge {
             case .previous: music.previousTrack?()
             case .seek(let position): music.setPlayerPosition?(position)
             }
-        }
+        } }
     }
 
     /// Library id of a track the user has in one of their playlists.
