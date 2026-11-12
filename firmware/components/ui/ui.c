@@ -222,6 +222,11 @@ void ui_set_lyrics(const char *const *lines, int n, bool synced)
     lv_obj_update_layout(s_lyrics);
 }
 
+/* Moving the lyrics redraws most of the screen, which this tablet manages about ten times a
+ * second (measured: 96 ms per frame). A gliding scroll at that rate looks jerky, so the text
+ * steps to the new line in a single frame instead. Set to LV_ANIM_ON to glide again. */
+#define LYRIC_SCROLL_ANIM LV_ANIM_OFF
+
 void ui_set_lyric_line(int index)
 {
     if (!s_synced || index == s_cur_line || index >= s_nlines) return;
@@ -230,7 +235,7 @@ void ui_set_lyric_line(int index)
     }
     s_cur_line = index;
     if (index < 0) {
-        lv_obj_scroll_to_y(s_lyrics, 0, LV_ANIM_ON);
+        lv_obj_scroll_to_y(s_lyrics, 0, LYRIC_SCROLL_ANIM);
         return;
     }
     lv_obj_set_style_text_opa(s_lines[index], LV_OPA_COVER, 0);
@@ -242,7 +247,7 @@ void ui_set_lyric_line(int index)
     lv_obj_get_coords(s_lines[index], &line);
     lv_obj_get_coords(s_lyrics, &box);
     int32_t wanted = box.y1 + lv_obj_get_height(s_lyrics) / 3;
-    lv_obj_scroll_by_bounded(s_lyrics, 0, wanted - line.y1, LV_ANIM_ON);
+    lv_obj_scroll_by_bounded(s_lyrics, 0, wanted - line.y1, LYRIC_SCROLL_ANIM);
 }
 
 /* ---- cover and background ---- */
