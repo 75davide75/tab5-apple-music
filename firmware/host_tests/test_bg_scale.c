@@ -24,7 +24,7 @@ static void test_gradient_has_no_bands(void)
         src[y * W + x] = (uint16_t)((v << 11) | ((v * 2) << 5) | v);
     }
     uint16_t *dst = calloc(DW * DH, 2);
-    CHECK(bg_upscale(src, W, H, dst, DW, DH, 255));
+    CHECK(bg_upscale(src, W, H, dst, DW, DH, 255, NULL));
     const double level = 255.0 / 31.0;
     double prev = column_mean(dst, 0, 4, r8), worst = 0;
     int rising = 1;
@@ -45,7 +45,7 @@ static void test_flat_colour_is_preserved(void)
     uint16_t src[W * H];
     for (int i = 0; i < W * H; i++) src[i] = (uint16_t)((13 << 11) | (40 << 5) | 21);
     uint16_t *dst = calloc(DW * DH, 2);
-    CHECK(bg_upscale(src, W, H, dst, DW, DH, 229));
+    CHECK(bg_upscale(src, W, H, dst, DW, DH, 229, NULL));
     double k = 229.0 / 255.0;
     CHECK(fabs(column_mean(dst, 0, DW, r8) - 13 * 255.0 / 31.0 * k) < 0.7);
     CHECK(fabs(column_mean(dst, 0, DW, g8) - 40 * 255.0 / 63.0 * k) < 0.7);
@@ -58,12 +58,12 @@ static void test_extremes_do_not_overflow(void)
     uint16_t src[W * H];
     for (int i = 0; i < W * H; i++) src[i] = 0xFFFF;
     uint16_t *dst = calloc(DW * DH, 2);
-    CHECK(bg_upscale(src, W, H, dst, DW, DH, 255));
+    CHECK(bg_upscale(src, W, H, dst, DW, DH, 255, NULL));
     int white = 1;
     for (int i = 0; i < DW * DH; i++) if (dst[i] != 0xFFFF) white = 0;
     CHECK(white);
     for (int i = 0; i < W * H; i++) src[i] = 0;
-    CHECK(bg_upscale(src, W, H, dst, DW, DH, 255));
+    CHECK(bg_upscale(src, W, H, dst, DW, DH, 255, NULL));
     int black = 1;
     for (int i = 0; i < DW * DH; i++) if (dst[i] != 0) black = 0;
     CHECK(black);
@@ -73,11 +73,48 @@ static void test_extremes_do_not_overflow(void)
 static void test_bad_arguments_are_refused(void)
 {
     uint16_t src[4] = {0}, dst[4] = {0x1234, 0x1234, 0x1234, 0x1234};
-    CHECK(!bg_upscale(NULL, 2, 2, dst, 2, 2, 255));
-    CHECK(!bg_upscale(src, 2, 2, NULL, 2, 2, 255));
-    CHECK(!bg_upscale(src, 1, 2, dst, 2, 2, 255));
-    CHECK(!bg_upscale(src, 2, 2, dst, 0, 2, 255));
+    CHECK(!bg_upscale(NULL, 2, 2, dst, 2, 2, 255, NULL));
+    CHECK(!bg_upscale(src, 2, 2, NULL, 2, 2, 255, NULL));
+    CHECK(!bg_upscale(src, 1, 2, dst, 2, 2, 255, NULL));
+    CHECK(!bg_upscale(src, 2, 2, dst, 0, 2, 255, NULL));
     CHECK(dst[0] == 0x1234);
+}
+
+/* The cover's shadow is drawn into the background: full strength under the cover, fading
+ * out smoothly with distance, and absent far away. */
+static void test_shadow_fades_smoothly(void)
+{
+    uint16_t src[W * H];
+    for (int i = 0; i < W * H; i++) src[i] = (uint16_t)((24 << 11) | (48 << 5) | 24);
+    uint16_t *plain = calloc(DW * DH, 2), *dst = calloc(DW * DH, 2);
+    bg_shadow_t sh = { .x = 40, .y = 40, .w = 80, .h = 80, .radius = 6, .blur = 40, .opa255 = 128 };
+    CHECK(bg_upscale(src, W, H, plain, DW, DH, 255, NULL));
+    CHECK(bg_upscale(src, W, H, dst, DW, DH, 255, &sh));
+    const double level = 255.0 / 31.0, full = 24 * level;
+
+    double inside = 0, far = 0;
+    for (int y = 60; y < 100; y++) for (int x = 60; x < 100; x++) inside += r8(dst[y * DW + x]);
+    inside /= 1600;
+    CHECK(fabs(inside - full * (1 - 128 / 255.0)) < 1.0);
+    for (int y = 0; y < DH; y++) for (int x = 220; x < DW; x++) far += r8(dst[y * DW + x]) - r8(plain[y * DW + x]);
+    CHECK(far == 0);
+
+    /* Walk right from the cover's edge through the blur, averaging over the rows beside the cover. */
+    double prev = -1, worst = 0; int brightening = 1;
+    for (int x = 120; x + 2 <= 170; x += 2) {
+        double m = 0;
+        for (int y = 50; y < 110; y++) for (int k = 0; k < 2; k++) m += r8(dst[y * DW + x + k]);
+        m /= 120;
+        if (prev >= 0) {
+            if (m - prev > worst) worst = m - prev;
+            if (m < prev - 0.2 * level) brightening = 0;
+        }
+        prev = m;
+    }
+    CHECK(brightening);
+    CHECK(worst < 1.5 * level);          /* no hard rim: the whole drop is 12 levels */
+    CHECK(fabs(prev - full) < 0.5);      /* gone by the end of the blur */
+    free(plain); free(dst);
 }
 
 void run_bg_scale_tests(void)
@@ -86,4 +123,5 @@ void run_bg_scale_tests(void)
     RUN(test_flat_colour_is_preserved);
     RUN(test_extremes_do_not_overflow);
     RUN(test_bad_arguments_are_refused);
+    RUN(test_shadow_fades_smoothly);
 }

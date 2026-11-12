@@ -26,6 +26,9 @@ static lv_obj_t *s_btn[3], *s_btn_toggle_img, *s_lyrics;
 static lv_obj_t *s_lines[UI_MAX_LYRIC_LINES];
 static lv_image_dsc_t s_bg_dsc, s_cover_dsc;
 static uint8_t *s_bg_buf, *s_cover_buf;
+#define BG_SRC_MAX (64 * 36)
+static uint16_t s_bg_src[BG_SRC_MAX];       /* the small colour image last given, kept for redraws */
+static int s_bg_src_w, s_bg_src_h;
 static int s_nlines, s_cur_line = -1;
 static bool s_synced, s_lyrics_layout;
 static ui_cmd_cb_t s_on_cmd;
@@ -109,6 +112,33 @@ static void slider_event(lv_event_t *e)
     s_on_cmd(UI_CMD_SEEK, pos);
 }
 
+/* ---- background ---- */
+
+/* The background is redrawn whole whenever its colours or the cover's place change, because
+ * the cover's shadow is part of it: drawn there it is dithered and shows no bands. */
+static void render_background(void)
+{
+    if (!s_bg_buf) return;
+    static const uint16_t flat[4] = {0x18E3, 0x18E3, 0x18E3, 0x18E3};      /* COL_BG, when there is no image */
+    bool has = s_bg_src_w > 0;
+    int cover = s_lyrics_layout ? UI_L_COVER : UI_N_COVER;
+    int cover_x = s_lyrics_layout ? UI_L_MARGIN_X : UI_N_COVER_X;
+    int cover_y = s_lyrics_layout ? UI_L_MARGIN_Y : (UI_H - UI_N_COVER) / 2;
+    /* Narrower than the cover and pushed down, so the shadow falls mostly below it. */
+    bg_shadow_t shadow = { .x = cover_x + 20, .y = cover_y + 36, .w = cover - 40, .h = cover - 16,
+                           .radius = UI_COVER_RADIUS, .blur = 90, .opa255 = 72 };
+    bool ok = bg_upscale(has ? s_bg_src : flat, has ? s_bg_src_w : 2, has ? s_bg_src_h : 2,
+                         (uint16_t *)s_bg_buf, UI_W, UI_H, has ? 255 - UI_OPA_VEIL : 255, &shadow);
+    if (!ok) {
+        lv_obj_set_hidden(s_bg, true);
+        return;
+    }
+    rgb565_dsc(&s_bg_dsc, s_bg_buf, UI_W, UI_H);
+    lv_image_set_src(s_bg, &s_bg_dsc);
+    lv_obj_set_hidden(s_bg, false);
+    lv_obj_invalidate(s_bg);
+}
+
 /* ---- layout ---- */
 
 /* Places cover, texts, bar and buttons for one of the two layouts. */
@@ -148,6 +178,7 @@ static void apply_layout(bool lyrics)
         lv_obj_set_pos(s_btn[i], cx + (i - 1) * step - UI_BTN / 2, cy - UI_BTN / 2);
     }
     lv_obj_set_hidden(s_lyrics, !lyrics);
+    render_background();        /* the cover moved, and its shadow with it */
 }
 
 /* ---- lyrics ---- */
@@ -225,15 +256,13 @@ void ui_set_cover(const uint8_t *rgb565, int w, int h)
 /* Fills the screen with the small blurred image, smoothed and with the dark veil baked in. */
 void ui_set_background(const uint8_t *rgb565, int w, int h)
 {
-    if (!rgb565 || !s_bg_buf
-        || !bg_upscale((const uint16_t *)rgb565, w, h, (uint16_t *)s_bg_buf, UI_W, UI_H, 255 - UI_OPA_VEIL)) {
-        lv_obj_set_hidden(s_bg, true);
-        return;
+    s_bg_src_w = 0;
+    if (rgb565 && w >= 2 && h >= 2 && w * h <= BG_SRC_MAX) {
+        memcpy(s_bg_src, rgb565, (size_t)(w * h) * 2);
+        s_bg_src_w = w;
+        s_bg_src_h = h;
     }
-    rgb565_dsc(&s_bg_dsc, s_bg_buf, UI_W, UI_H);
-    lv_image_set_src(s_bg, &s_bg_dsc);
-    lv_obj_set_hidden(s_bg, false);
-    lv_obj_invalidate(s_bg);
+    render_background();
 }
 
 /* ---- now playing ---- */
@@ -310,10 +339,6 @@ void ui_init(ui_cmd_cb_t on_cmd)
     lv_obj_set_style_clip_corner(s_cover_box, true, 0);
     lv_obj_set_style_bg_color(s_cover_box, COL_PLACEHOLDER, 0);
     lv_obj_set_style_bg_opa(s_cover_box, LV_OPA_COVER, 0);
-    lv_obj_set_style_shadow_width(s_cover_box, 50, 0);
-    lv_obj_set_style_shadow_offset_y(s_cover_box, 18, 0);
-    lv_obj_set_style_shadow_color(s_cover_box, lv_color_black(), 0);
-    lv_obj_set_style_shadow_opa(s_cover_box, LV_OPA_50, 0);
     s_cover = lv_image_create(s_cover_box);
     lv_image_set_inner_align(s_cover, LV_IMAGE_ALIGN_STRETCH);   /* the large layout scales the 400 px cover up */
     lv_obj_set_hidden(s_cover, true);

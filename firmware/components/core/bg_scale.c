@@ -37,7 +37,27 @@ static int quantise(float value01, int max, float noise)
     return q < 0 ? 0 : (q > max ? max : q);
 }
 
-bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh, int keep255)
+/* How much light the shadow leaves at a pixel: 1 = none taken away. */
+static float shadow_keep(const bg_shadow_t *s, int px, int py)
+{
+    if (px < s->x - s->blur || px >= s->x + s->w + s->blur
+        || py < s->y - s->blur || py >= s->y + s->h + s->blur) return 1.0f;
+    float full = (float)s->opa255 / 255.0f;
+    /* Distance from the rounded rectangle's edge, positive outside. */
+    float hw = (float)s->w / 2.0f, hh = (float)s->h / 2.0f, r = (float)s->radius;
+    float qx = fabsf((float)px + 0.5f - ((float)s->x + hw)) - (hw - r);
+    float qy = fabsf((float)py + 0.5f - ((float)s->y + hh)) - (hh - r);
+    float ox = qx > 0 ? qx : 0, oy = qy > 0 ? qy : 0;
+    float d = sqrtf(ox * ox + oy * oy) - r;
+    if (d <= 0) return 1.0f - full;
+    if (s->blur <= 0 || d >= (float)s->blur) return 1.0f;
+    float t = d / (float)s->blur;
+    float fade = 1.0f - t * t * (3.0f - 2.0f * t);      /* eases in and out: no rim, no hard end */
+    return 1.0f - full * fade;
+}
+
+bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh, int keep255,
+                const bg_shadow_t *shadow)
 {
     if (!src || !dst || w < 2 || h < 2 || dw < 2 || dh < 2) return false;
     taps_t *xt = malloc(sizeof(taps_t) * (size_t)dw);
@@ -71,6 +91,10 @@ bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh
             for (int k = 0; k < 3; k++) {
                 int i = x * 3 + k;
                 c[k] = yt.wt[0] * r0[i] + yt.wt[1] * r1[i] + yt.wt[2] * r2[i] + yt.wt[3] * r3[i];
+            }
+            if (shadow) {
+                float k = shadow_keep(shadow, x, y);
+                c[0] *= k; c[1] *= k; c[2] *= k;
             }
             float n = dither_at(x, y);
             /* Opposite noise on green so the three channels do not brighten together. */
