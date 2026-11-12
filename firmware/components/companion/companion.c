@@ -26,8 +26,9 @@
 
 #define COVER_BYTES (COMPANION_COVER_PX * COMPANION_COVER_PX * 2)
 #define REDISCOVER_MS 10000
-/* Measured on this Tab5 (factory ESP32-C6 firmware): the Wi-Fi link delivers only
- * about 4 kB/s, so answers are kept small and timeouts long. */
+/* Measured on this Tab5 (factory ESP32-C6 firmware): packets that arrive in bursts get
+ * lost, which made downloads crawl at ~4 kB/s. sdkconfig.defaults therefore keeps the
+ * TCP receive window at two segments (~20 kB/s); answers are still kept small. */
 #define HTTP_TIMEOUT_MS 15000
 #define MAX_JPEG_BYTES (96 * 1024)
 #define MAX_LINES 300
@@ -278,10 +279,35 @@ static void discover(void)
     mdns_query_results_free(r);
 }
 
+#define LINK_TEST 0   /* set to 1 to time a few downloads from the companion at start-up */
+#if LINK_TEST
+#include "esp_timer.h"
+static void link_test(void)
+{
+    static const int sizes[] = {8000, 20000, 32000, 20000};
+    for (unsigned i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        char path[48];
+        snprintf(path, sizeof path, "/v1/blob?n=%d", sizes[i]);
+        int64_t t0 = esp_timer_get_time();
+        size_t len = 0;
+        uint8_t *b = http_get(path, 400000, &len, 8000);
+        ESP_LOGI(TAG, "link test %d bytes: %s in %d ms", sizes[i], b ? "ok" : "FAILED",
+                 (int)((esp_timer_get_time() - t0) / 1000));
+        heap_caps_free(b);
+    }
+}
+#endif
+
 static void worker(void *arg)
 {
     TickType_t last_discovery = 0;
+#if LINK_TEST
+    bool tested = false;
+#endif
     for (;;) {
+#if LINK_TEST
+        if (s_available && !tested) { tested = true; link_test(); }
+#endif
         if (s_have_ip && !s_available &&
             (last_discovery == 0 || xTaskGetTickCount() - last_discovery > pdMS_TO_TICKS(REDISCOVER_MS))) {
             discover();

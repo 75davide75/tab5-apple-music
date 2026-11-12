@@ -27,6 +27,10 @@ func handle(_ request: HTTPRequest) -> HTTPResponse {
         }
         return HTTPResponse(contentType: "image/jpeg", body: jpeg)
 
+    case ("GET", "/v1/blob"):   // link speed test (firmware built with LINK_TEST)
+        let n = min(q["n"].flatMap { Int($0) } ?? 0, 1_000_000)
+        return HTTPResponse(contentType: "application/octet-stream", body: Data(repeating: 0x5A, count: n))
+
     default:
         return .notFound()
     }
