@@ -12,6 +12,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "mdns.h"
+#include "nvs.h"
 #include "text_util.h"
 
 #if __has_include("wifi_secrets.h")
@@ -54,6 +55,26 @@ void companion_list_free(companion_list_t *list)
 
 bool companion_available(void) { return s_available; }
 
+/* The companion's last known address is remembered so that a restart does not
+ * have to wait for mDNS; if it stops answering we fall back to discovery. */
+static void load_base(void)
+{
+    nvs_handle_t h;
+    size_t len = sizeof s_base;
+    if (nvs_open("companion", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_get_str(h, "base", s_base, &len) != ESP_OK) s_base[0] = 0;
+    nvs_close(h);
+}
+
+static void save_base(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("companion", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, "base", s_base);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 /* ---- Wi-Fi ---- */
 
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -63,11 +84,13 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_have_ip = false;
         s_available = false;
-        ESP_LOGW(TAG, "Wi-Fi disconnected, retrying");
+        ESP_LOGW(TAG, "Wi-Fi disconnected (reason %d), retrying",
+                 data ? ((wifi_event_sta_disconnected_t *)data)->reason : -1);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ESP_LOGI(TAG, "Wi-Fi connected");
         s_have_ip = true;
+        if (s_base[0]) { s_failures = 0; s_available = true; }   /* try the remembered address first */
     }
 }
 
@@ -216,17 +239,29 @@ static void run_job(job_t *j)
 static void discover(void)
 {
     mdns_result_t *r = NULL;
-    if (mdns_query_ptr("_tab5music", "_tcp", 2000, 4, &r) != ESP_OK || !r) return;
+    esp_err_t err = mdns_query_ptr("_tab5music", "_tcp", 3000, 4, &r);
+    if (err != ESP_OK || !r) {
+        ESP_LOGI(TAG, "companion not found yet (mdns: %s)", esp_err_to_name(err));
+        return;
+    }
     for (mdns_result_t *it = r; it; it = it->next) {
-        for (mdns_ip_addr_t *a = it->addr; a; a = a->next) {
-            if (a->addr.type != ESP_IPADDR_TYPE_V4) continue;
-            snprintf(s_base, sizeof s_base, "http://" IPSTR ":%u", IP2STR(&a->addr.u_addr.ip4), it->port);
-            s_failures = 0;
-            s_available = true;
-            ESP_LOGI(TAG, "companion found at %s", s_base);
-            mdns_query_results_free(r);
-            return;
+        ESP_LOGI(TAG, "mdns answer: host=%s port=%u addr=%s", it->hostname ? it->hostname : "-", it->port,
+                 it->addr ? "yes" : "no");
+        esp_ip4_addr_t ip = {0};
+        bool have_ip = false;
+        for (mdns_ip_addr_t *a = it->addr; a && !have_ip; a = a->next) {
+            if (a->addr.type == ESP_IPADDR_TYPE_V4) { ip = a->addr.u_addr.ip4; have_ip = true; }
         }
+        /* The answer often carries only the host name: resolve it separately. */
+        if (!have_ip && it->hostname) have_ip = (mdns_query_a(it->hostname, 2000, &ip) == ESP_OK);
+        if (!have_ip) continue;
+        snprintf(s_base, sizeof s_base, "http://" IPSTR ":%u", IP2STR(&ip), it->port);
+        s_failures = 0;
+        s_available = true;
+        save_base();
+        ESP_LOGI(TAG, "companion found at %s", s_base);
+        mdns_query_results_free(r);
+        return;
     }
     mdns_query_results_free(r);
 }
@@ -256,6 +291,7 @@ esp_err_t companion_start(const companion_callbacks_t *cb)
     s_thumbs = xQueueCreate(96, sizeof(job_t));
     if (!s_urgent || !s_thumbs) return ESP_ERR_NO_MEM;
 
+    load_base();
     if (strlen(WIFI_SSID) == 0) {
         ESP_LOGW(TAG, "no Wi-Fi credentials (main/wifi_secrets.h): running without the companion");
     } else {

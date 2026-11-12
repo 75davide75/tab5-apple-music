@@ -35,6 +35,7 @@ static bool s_dirty = true;
 /* Playlist shown in the right column (guarded by s_mx). */
 static companion_list_t *s_list;
 static bool s_list_dirty;
+static bool s_list_missing;         /* the last request got no answer from the Mac */
 static uint32_t s_req_seq;          /* id of the latest companion request; older answers are dropped */
 static now_playing_t s_req_np;      /* the track that request was about */
 static played_set_t s_played;
@@ -131,6 +132,7 @@ static void on_list(uint32_t seq, companion_list_t *list)
     companion_list_t *old = s_list;
     s_list = list;
     s_list_dirty = true;
+    s_list_missing = (list == NULL);
     np = s_req_np;
     xSemaphoreGive(s_mx);
 
@@ -210,6 +212,7 @@ static void ui_task(void *arg)
     int asked_count = -2;
     int64_t changed_ms = 0;
     bool ask_pending = false;
+    int64_t retry_ms = 0;
 
     for (;;) {
         int64_t t = now_ms();
@@ -222,6 +225,7 @@ static void ui_task(void *arg)
         standby_on_playback(&s_standby, src == SRC_NONE ? PB_STOPPED : shown.state, t);
         bool on = standby_screen_on(&s_standby, t);
         bool list_dirty = s_list_dirty;
+        bool list_missing = s_list_missing;
         xSemaphoreGive(s_mx);
 
         /* A track change arrives as several separate updates (artist, album, title):
@@ -233,6 +237,11 @@ static void ui_task(void *arg)
             asked_shuffle = shown.shuffle;
             asked_count = shown.queue_count;
             changed_ms = t;
+            ask_pending = true;
+        }
+        /* The Mac was unreachable last time: ask again once it is back. */
+        if (list_missing && !ask_pending && src != SRC_NONE && companion_available() && t - retry_ms > 3000) {
+            retry_ms = t;
             ask_pending = true;
         }
         if (ask_pending && t - changed_ms >= 400 && shown.title[0]) {
