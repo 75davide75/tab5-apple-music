@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "lyrics.h"
+#include "mac_state.h"
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
 #include "ams_ble.h"
@@ -82,7 +83,11 @@ static void on_ui_cmd(ui_cmd_t cmd, float seek_s)
     source_t src = arbiter_active(&s_arb);
     xSemaphoreGive(s_mx);
 
-    if (src == SRC_IOS_0 || src == SRC_IOS_1) {
+    if (src == SRC_MAC) {
+        static const companion_mac_cmd_t mac[] = {[UI_CMD_TOGGLE] = COMPANION_MAC_TOGGLE, [UI_CMD_NEXT] = COMPANION_MAC_NEXT,
+                                                  [UI_CMD_PREV] = COMPANION_MAC_PREV, [UI_CMD_SEEK] = COMPANION_MAC_SEEK};
+        companion_mac_command(mac[cmd], seek_s);
+    } else if (src == SRC_IOS_0 || src == SRC_IOS_1) {
         static const uint8_t map[] = {[UI_CMD_TOGGLE] = AMS_CMD_TOGGLE, [UI_CMD_NEXT] = AMS_CMD_NEXT,
                                       [UI_CMD_PREV] = AMS_CMD_PREV};
         if (cmd != UI_CMD_SEEK) ams_ble_send_command((uint8_t)src, map[cmd]);
@@ -131,6 +136,24 @@ static void on_cover(uint32_t seq, uint8_t *cover)
         bsp_display_unlock();
     }
     companion_free(cover);
+}
+
+/* The Mac's own Music app, polled about once a second. */
+static void on_mac(bool reachable, const char *state, const char *title, const char *artist, const char *album,
+                   float duration_s, float elapsed_s)
+{
+    static int failures;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    if (reachable) {
+        failures = 0;
+        if (mac_state_apply(&s_np[SRC_MAC], state, title, artist, album, duration_s, elapsed_s, now_ms())) s_dirty = true;
+        arbiter_report(&s_arb, SRC_MAC, s_np[SRC_MAC].state, now_ms());
+    } else if (++failures == 3) {            /* three missed polls: the Mac is gone */
+        now_playing_init(&s_np[SRC_MAC]);
+        arbiter_disconnected(&s_arb, SRC_MAC);
+        s_dirty = true;
+    }
+    xSemaphoreGive(s_mx);
 }
 
 /* Shows the lyrics and background that just arrived. Call with the display lock held. */
@@ -261,7 +284,7 @@ void app_main(void)
     lv_indev_add_event_cb(bsp_display_get_input_dev(), on_touch, LV_EVENT_PRESSED, NULL);
     bsp_display_unlock();
 
-    static const companion_callbacks_t companion_cb = {.on_track = on_track, .on_cover = on_cover};
+    static const companion_callbacks_t companion_cb = {.on_track = on_track, .on_cover = on_cover, .on_mac = on_mac};
     ESP_ERROR_CHECK(companion_start(&companion_cb));
 
     ESP_ERROR_CHECK(ams_ble_start(on_ams_update, on_ams_conn));

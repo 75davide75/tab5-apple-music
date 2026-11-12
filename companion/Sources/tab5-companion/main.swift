@@ -27,6 +27,16 @@ func handle(_ request: HTTPRequest) -> HTTPResponse {
         }
         return HTTPResponse(contentType: "image/jpeg", body: jpeg)
 
+    case ("GET", "/v1/mac/state"):
+        return HTTPResponse(body: bridge.playerState().encode())
+
+    case ("POST", "/v1/mac/command"):
+        guard let command = MacCommand.parse(request.body, durationS: bridge.playerState().durationS) else {
+            return HTTPResponse(status: 400, body: Data("{}".utf8))
+        }
+        bridge.perform(command)
+        return HTTPResponse(status: 204)
+
     case ("GET", "/v1/blob"):   // link speed test (firmware built with LINK_TEST)
         let n = min(q["n"].flatMap { Int($0) } ?? 0, 1_000_000)
         return HTTPResponse(contentType: "application/octet-stream", body: Data(repeating: 0x5A, count: n))

@@ -24,9 +24,24 @@ import ScriptingBridge
     @objc optional func tracks() -> SBElementArray
 }
 
+@objc private enum MusicPlayerStateSB: AEKeyword {
+    case stopped = 0x6b50_5353      // 'kPSS'
+    case playing = 0x6b50_5350      // 'kPSP'
+    case paused = 0x6b50_5370       // 'kPSp'
+    case fastForwarding = 0x6b50_5346
+    case rewinding = 0x6b50_5352
+}
+
 @objc private protocol MusicApplicationSB {
     @objc optional func userPlaylists() -> SBElementArray
     @objc optional func playlists() -> SBElementArray
+    @objc optional var playerState: MusicPlayerStateSB { get }
+    @objc optional var playerPosition: Double { get }
+    @objc optional var currentTrack: SBObject { get }
+    @objc optional func setPlayerPosition(_ position: Double)
+    @objc optional func playpause()
+    @objc optional func nextTrack()
+    @objc optional func previousTrack()
 }
 
 extension SBObject: MusicTrackSB, MusicArtworkSB, MusicPlaylistSB {}
@@ -116,6 +131,37 @@ final class MusicBridge {
                 return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
             }
             return nil
+        }
+    }
+
+    /// What Music on this Mac is playing. Never launches Music: when it is closed it is simply "stopped".
+    func playerState() -> MacState {
+        queue.sync {
+            guard let app, app.isRunning else { return .stopped }
+            let music = app as MusicApplicationSB
+            let state: MacState.Playback
+            switch music.playerState {
+            case .some(.playing), .some(.fastForwarding), .some(.rewinding): state = .playing
+            case .some(.paused): state = .paused
+            default: return .stopped
+            }
+            guard let track = music.currentTrack else { return .stopped }
+            let t = track as MusicTrackSB
+            return MacState(state: state, title: t.name ?? "", artist: t.artist ?? "", album: t.album ?? "",
+                            durationS: t.duration ?? 0, elapsedS: music.playerPosition ?? 0)
+        }
+    }
+
+    func perform(_ command: MacCommand) {
+        queue.sync {
+            guard let app, app.isRunning else { return }
+            let music = app as MusicApplicationSB
+            switch command {
+            case .toggle: music.playpause?()
+            case .next: music.nextTrack?()
+            case .previous: music.previousTrack?()
+            case .seek(let position): music.setPlayerPosition?(position)
+            }
         }
     }
 

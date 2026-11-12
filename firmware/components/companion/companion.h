@@ -30,6 +30,10 @@ typedef struct {
     void (*on_track)(uint32_t seq, companion_track_t *info);
     /* cover: COMPANION_COVER_PX square RGB565, or NULL. The callee frees it. */
     void (*on_cover)(uint32_t seq, uint8_t *cover);
+    /* Result of polling the Mac's own player (about once a second while the companion is
+     * reachable). reachable == false means the poll failed; the strings are then NULL. */
+    void (*on_mac)(bool reachable, const char *state, const char *title, const char *artist, const char *album,
+                   float duration_s, float elapsed_s);
 } companion_callbacks_t;
 
 /* Connects to Wi-Fi and starts looking for the companion. esp_wifi_init() must already have run. */
@@ -38,3 +42,7 @@ bool companion_available(void);
 
 /* Asks for the lyrics and background of a track, then for its cover. */
 void companion_request_track(const now_playing_t *np, uint32_t seq);
+
+/* Transport commands for music playing on the Mac itself. */
+typedef enum { COMPANION_MAC_TOGGLE, COMPANION_MAC_NEXT, COMPANION_MAC_PREV, COMPANION_MAC_SEEK } companion_mac_cmd_t;
+void companion_mac_command(companion_mac_cmd_t cmd, float seek_s);

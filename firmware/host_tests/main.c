@@ -6,6 +6,7 @@ void run_standby_tests(void);
 void run_source_arbiter_tests(void);
 void run_text_util_tests(void);
 void run_lyrics_tests(void);
+void run_mac_state_tests(void);
 
 int main(void)
 {
@@ -15,6 +16,7 @@ int main(void)
     run_source_arbiter_tests();
     run_text_util_tests();
     run_lyrics_tests();
+    run_mac_state_tests();
     printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

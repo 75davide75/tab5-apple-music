@@ -32,14 +32,15 @@
 #define HTTP_TIMEOUT_MS 15000
 #define MAX_JPEG_BYTES (96 * 1024)
 #define MAX_LINES 300
+#define MAC_POLL_MS 1000
 
 static const char *TAG = "companion";
 
-typedef enum { JOB_TRACK, JOB_COVER } job_kind_t;
+typedef enum { JOB_TRACK, JOB_COVER, JOB_MAC_CMD } job_kind_t;
 typedef struct {
     job_kind_t kind;
     uint32_t seq;
-    char *query;   /* heap; title/artist/album already URL-encoded */
+    char *query;   /* heap; title/artist/album already URL-encoded, or the JSON body of a command */
 } job_t;
 
 static companion_callbacks_t s_cb;
@@ -145,6 +146,42 @@ static uint8_t *http_get(const char *path, size_t cap, size_t *len, int timeout_
     return body.buf;
 }
 
+/* POSTs a small JSON body; true on a 2xx answer. */
+static bool http_post_json(const char *path, const char *json)
+{
+    char url[160];
+    snprintf(url, sizeof url, "%s%s", s_base, path);
+    esp_http_client_config_t cfg = {.url = url, .timeout_ms = 4000, .method = HTTP_METHOD_POST};
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return false;
+    esp_http_client_set_header(c, "Content-Type", "application/json");
+    esp_http_client_set_post_field(c, json, (int)strlen(json));
+    esp_err_t err = esp_http_client_perform(c);
+    int status = esp_http_client_get_status_code(c);
+    esp_http_client_cleanup(c);
+    return err == ESP_OK && status >= 200 && status < 300;
+}
+
+/* Asks the Mac what its own Music app is playing. */
+static void poll_mac(void)
+{
+    if (!s_cb.on_mac) return;
+    char *text = (char *)http_get("/v1/mac/state", 4096, NULL, 3000);
+    cJSON *root = text ? cJSON_Parse(text) : NULL;
+    heap_caps_free(text);
+    if (!root) {
+        s_cb.on_mac(false, NULL, NULL, NULL, NULL, 0, 0);
+        return;
+    }
+    const cJSON *dur = cJSON_GetObjectItem(root, "duration_s"), *pos = cJSON_GetObjectItem(root, "elapsed_s");
+    s_cb.on_mac(true, cJSON_GetStringValue(cJSON_GetObjectItem(root, "state")),
+                cJSON_GetStringValue(cJSON_GetObjectItem(root, "title")),
+                cJSON_GetStringValue(cJSON_GetObjectItem(root, "artist")),
+                cJSON_GetStringValue(cJSON_GetObjectItem(root, "album")),
+                cJSON_IsNumber(dur) ? (float)dur->valuedouble : 0, cJSON_IsNumber(pos) ? (float)pos->valuedouble : 0);
+    cJSON_Delete(root);
+}
+
 /* ---- jobs ---- */
 
 static companion_track_t *parse_track(char *text)
@@ -245,6 +282,10 @@ static void run_job(job_t *j)
         else heap_caps_free(cover);
         break;
     }
+    case JOB_MAC_CMD:
+        if (s_available && j->query) http_post_json("/v1/mac/command", j->query);
+        poll_mac();     /* show the effect straight away */
+        break;
     }
     free(j->query);
 }
@@ -300,7 +341,7 @@ static void link_test(void)
 
 static void worker(void *arg)
 {
-    TickType_t last_discovery = 0;
+    TickType_t last_discovery = 0, last_mac_poll = 0;
 #if LINK_TEST
     bool tested = false;
 #endif
@@ -314,6 +355,11 @@ static void worker(void *arg)
             last_discovery = xTaskGetTickCount();
         }
         job_t j;
+        if (s_available && xTaskGetTickCount() - last_mac_poll >= pdMS_TO_TICKS(MAC_POLL_MS) &&
+            uxQueueMessagesWaiting(s_jobs) == 0) {
+            poll_mac();
+            last_mac_poll = xTaskGetTickCount();
+        }
         if (xQueueReceive(s_jobs, &j, pdMS_TO_TICKS(200)) == pdTRUE) {
             /* A newer track makes anything still waiting pointless: only its jobs are worth the slow link. */
             job_t newer;
@@ -371,4 +417,15 @@ void companion_request_track(const now_playing_t *np, uint32_t seq)
     if (xQueueSend(s_jobs, &track, 0) != pdTRUE) free(track.query);
     job_t cover = {.kind = JOB_COVER, .seq = seq, .query = build_query(np)};
     if (xQueueSend(s_jobs, &cover, 0) != pdTRUE) free(cover.query);
+}
+
+void companion_mac_command(companion_mac_cmd_t cmd, float seek_s)
+{
+    static const char *names[] = {"toggle", "next", "prev", "seek"};
+    char *body = malloc(64);
+    if (!body) return;
+    if (cmd == COMPANION_MAC_SEEK) snprintf(body, 64, "{\"cmd\":\"seek\",\"position_s\":%.1f}", (double)seek_s);
+    else snprintf(body, 64, "{\"cmd\":\"%s\"}", names[cmd]);
+    job_t j = {.kind = JOB_MAC_CMD, .query = body};
+    if (xQueueSend(s_jobs, &j, 0) != pdTRUE) free(body);
 }
