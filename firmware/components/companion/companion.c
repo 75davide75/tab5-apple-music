@@ -188,18 +188,29 @@ static companion_track_t *parse_track(char *text)
     return t;
 }
 
+/* The decoder needs a scratch area; its default (3.1 kB) is too small for the JPEGs macOS writes. */
+#define JPEG_WORK_BYTES (70 * 1024)
+
 static uint8_t *decode_cover(const uint8_t *jpeg, size_t len)
 {
     uint8_t *out = heap_caps_malloc(COVER_BYTES, MALLOC_CAP_SPIRAM);
-    if (!out) return NULL;
+    void *work = heap_caps_malloc(JPEG_WORK_BYTES, MALLOC_CAP_SPIRAM);
+    if (!out || !work) {
+        heap_caps_free(out);
+        heap_caps_free(work);
+        return NULL;
+    }
     esp_jpeg_image_cfg_t cfg = {
         .indata = (uint8_t *)jpeg, .indata_size = len, .outbuf = out, .outbuf_size = COVER_BYTES,
         .out_format = JPEG_IMAGE_FORMAT_RGB565, .out_scale = JPEG_IMAGE_SCALE_0,
+        .advanced = {.working_buffer = work, .working_buffer_size = JPEG_WORK_BYTES},
     };
     esp_jpeg_image_output_t info = {0};
     esp_err_t err = esp_jpeg_decode(&cfg, &info);
+    heap_caps_free(work);
     if (err != ESP_OK || info.width != COMPANION_COVER_PX || info.height != COMPANION_COVER_PX) {
-        ESP_LOGW(TAG, "cover decode failed: %s, %ux%u", esp_err_to_name(err), info.width, info.height);
+        ESP_LOGW(TAG, "cover decode failed: %s, %ux%u, %u bytes of JPEG", esp_err_to_name(err), info.width,
+                 info.height, (unsigned)len);
         heap_caps_free(out);
         return NULL;
     }

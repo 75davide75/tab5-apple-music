@@ -44,7 +44,7 @@ final class ImagePrepTests: XCTestCase {
         let img = image([UInt8](repeating: 255, count: 16 * 16 * 4), width: 16, height: 16)
         let px = unpack(ImagePrep.blurredBackground(img))
         let brightest = px.map { max($0.r, $0.g, $0.b) }.max() ?? 255
-        XCTAssertLessThanOrEqual(brightest, 120)
+        XCTAssertLessThanOrEqual(brightest, 170)
     }
 
     func testDarkArtworkIsNotBrightened() {
@@ -62,6 +62,23 @@ final class ImagePrepTests: XCTestCase {
         for y in 0..<90 { for x in 1..<160 { biggestStep = max(biggestStep, abs(px[y * 160 + x].g - px[y * 160 + x - 1].g)) } }
         XCTAssertLessThanOrEqual(biggestStep, 8)
         XCTAssertLessThan(px[45 * 160 + 5].g, px[45 * 160 + 154].g)
+    }
+
+    // A washed-out cover must still give a clearly coloured background, not grey.
+    func testBackgroundColoursAreMoreSaturatedThanTheArtwork() {
+        let img = image([UInt8](repeating: 0, count: 0) + (0..<(16 * 16)).flatMap { _ in [UInt8(150), 120, 110, 255] },
+                        width: 16, height: 16)
+        let p = unpack(ImagePrep.blurredBackground(img))[45 * 160 + 80]
+        let hi = Double(max(p.r, p.g, p.b)), lo = Double(min(p.r, p.g, p.b))
+        XCTAssertGreaterThan((hi - lo) / hi, 0.40)     // the source saturation is (150-110)/150 = 0.27
+        XCTAssertGreaterThan(p.r, p.g)                  // and the hue is kept
+        XCTAssertGreaterThan(p.g, p.b - 8)
+    }
+
+    func testGreyArtworkStaysGrey() {
+        let img = image([UInt8](repeating: 90, count: 16 * 16 * 4), width: 16, height: 16)
+        let p = unpack(ImagePrep.blurredBackground(img))[45 * 160 + 80]
+        XCTAssertLessThanOrEqual(max(p.r, p.g, p.b) - min(p.r, p.g, p.b), 8)
     }
 
     func testSmallBackgroundIs16x9() {

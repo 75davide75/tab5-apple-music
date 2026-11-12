@@ -43,15 +43,31 @@ public enum ImagePrep {
         var px = [Float](repeating: 0, count: w * h * 3)
         for i in 0..<(w * h) { for c in 0..<3 { px[i * 3 + c] = Float(src[i * 4 + c]) } }
 
-        // Three box-blur passes approximate a wide Gaussian.
+        // Repeated box blurs approximate a Gaussian: wide enough to remove every detail,
+        // narrow enough to keep the different colours of the artwork apart.
         var tmp = px
         for _ in 0..<3 {
-            boxBlur(&px, &tmp, w: w, h: h, radius: 28, horizontal: true)
-            boxBlur(&tmp, &px, w: w, h: h, radius: 18, horizontal: false)
+            boxBlur(&px, &tmp, w: w, h: h, radius: 16, horizontal: true)
+            boxBlur(&tmp, &px, w: w, h: h, radius: 10, horizontal: false)
         }
 
+        // Blurring averages colours towards grey, so push the saturation back up.
+        for i in 0..<(w * h) {
+            let r = px[i * 3], g = px[i * 3 + 1], b = px[i * 3 + 2]
+            let hi = max(r, g, b), lo = min(r, g, b)
+            guard hi > 0, hi > lo else { continue }
+            let saturation = (hi - lo) / hi
+            let boosted = min(0.85, saturation * 1.9)
+            // moving each channel towards `hi` by the right amount changes saturation but not hue or value
+            let k = boosted / saturation
+            px[i * 3] = hi - (hi - r) * k
+            px[i * 3 + 1] = hi - (hi - g) * k
+            px[i * 3 + 2] = hi - (hi - b) * k
+        }
+
+        // White text is drawn on top: cap the brightest point.
         let peak = px.max() ?? 0
-        let gain: Float = peak > 105 ? 105 / peak : 1
+        let gain: Float = peak > 160 ? 160 / peak : 1
         var out = [UInt8](repeating: 255, count: w * h * 4)
         for i in 0..<(w * h) { for c in 0..<3 { out[i * 4 + c] = UInt8(max(0, min(255, px[i * 3 + c] * gain))) } }
         return pack565(out)

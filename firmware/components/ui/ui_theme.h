@@ -19,7 +19,7 @@
 #define UI_N_PANEL_W (UI_W - UI_N_PANEL_X - 70)
 
 #define UI_COVER_RADIUS 13
-#define UI_OPA_VEIL 71          /* 28% black over the background */
+#define UI_OPA_VEIL 26          /* 10% black over the background */
 #define UI_OPA_ARTIST 158       /* 62% */
 #define UI_OPA_TIME 140         /* 55% */
 #define UI_OPA_BAR_BG 56        /* 22% */

@@ -195,10 +195,15 @@ void ui_set_lyric_line(int index)
         return;
     }
     lv_obj_set_style_text_opa(s_lines[index], LV_OPA_COVER, 0);
-    /* keep the line being sung about a third of the way down */
-    int y = lv_obj_get_y(s_lines[index]) + lv_obj_get_scroll_y(s_lyrics) - lv_obj_get_height(s_lyrics) / 3;
-    if (y < 0) y = 0;
-    lv_obj_scroll_to_y(s_lyrics, y, LV_ANIM_ON);
+
+    /* Bring the line being sung to a third of the way down. Working from where the line
+     * is on screen right now stays correct even if an earlier scroll is still animating. */
+    lv_area_t line, box;
+    lv_obj_update_layout(s_lyrics);
+    lv_obj_get_coords(s_lines[index], &line);
+    lv_obj_get_coords(s_lyrics, &box);
+    int32_t wanted = box.y1 + lv_obj_get_height(s_lyrics) / 3;
+    lv_obj_scroll_by_bounded(s_lyrics, 0, wanted - line.y1, LV_ANIM_ON);
 }
 
 /* ---- cover and background ---- */
