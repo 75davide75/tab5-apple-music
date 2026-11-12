@@ -1,3 +1,4 @@
+#include "bg_scale.h"
 #include "ui.h"
 #include <stdio.h>
 #include <string.h>
@@ -221,37 +222,13 @@ void ui_set_cover(const uint8_t *rgb565, int w, int h)
     lv_obj_fade_in(s_cover, 300, 0);
 }
 
-/* Bilinear upscale of the small blurred image to the full screen, with the dark veil baked in. */
+/* Fills the screen with the small blurred image, smoothed and with the dark veil baked in. */
 void ui_set_background(const uint8_t *rgb565, int w, int h)
 {
-    if (!rgb565 || w < 2 || h < 2 || !s_bg_buf) {
+    if (!rgb565 || !s_bg_buf
+        || !bg_upscale((const uint16_t *)rgb565, w, h, (uint16_t *)s_bg_buf, UI_W, UI_H, 255 - UI_OPA_VEIL)) {
         lv_obj_set_hidden(s_bg, true);
         return;
-    }
-    const uint16_t *src = (const uint16_t *)rgb565;
-    uint16_t *dst = (uint16_t *)s_bg_buf;
-    const int keep = 255 - UI_OPA_VEIL;
-    for (int y = 0; y < UI_H; y++) {
-        int fy = y * (h - 1) * 256 / (UI_H - 1);
-        int y0 = fy >> 8, wy = fy & 255;
-        int y1 = y0 + 1 < h ? y0 + 1 : y0;
-        for (int x = 0; x < UI_W; x++) {
-            int fx = x * (w - 1) * 256 / (UI_W - 1);
-            int x0 = fx >> 8, wx = fx & 255;
-            int x1 = x0 + 1 < w ? x0 + 1 : x0;
-            uint16_t p[4] = {src[y0 * w + x0], src[y0 * w + x1], src[y1 * w + x0], src[y1 * w + x1]};
-            int c[3];
-            for (int k = 0; k < 3; k++) {
-                int sh = k == 0 ? 11 : (k == 1 ? 5 : 0);
-                int mask = k == 1 ? 0x3F : 0x1F;
-                int a = (p[0] >> sh) & mask, b = (p[1] >> sh) & mask;
-                int cc = (p[2] >> sh) & mask, d = (p[3] >> sh) & mask;
-                int top = a * (256 - wx) + b * wx;
-                int bot = cc * (256 - wx) + d * wx;
-                c[k] = ((top * (256 - wy) + bot * wy) >> 16) * keep / 255;
-            }
-            dst[y * UI_W + x] = (uint16_t)((c[0] << 11) | (c[1] << 5) | c[2]);
-        }
     }
     rgb565_dsc(&s_bg_dsc, s_bg_buf, UI_W, UI_H);
     lv_image_set_src(s_bg, &s_bg_dsc);
