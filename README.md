@@ -120,7 +120,7 @@ cd companion && swift test
 
 ## Limiti noti
 
-- **Solo l'app Musica.** Video, podcast e altre app sull'iPhone non accendono il Tab5.
+- **Solo l'app Musica.** Video, podcast e altre app sull'iPhone non accendono il Tab5. L'app viene riconosciuta dal nome, che dipende dalla lingua dell'iPhone: l'elenco dei nomi è in `firmware/components/core/ams_parse.c`. Solo l'italiano è stato provato su un dispositivo vero; se nella tua lingua il Tab5 resta spento, aggiungi lì il nome con cui l'iPhone chiama l'app.
 - **Barra di avanzamento con iPhone/iPad:** mostra i minuti ma non si trascina. Il Bluetooth di Apple accetta solo play/pausa, avanti e indietro.
 - **Coda e prossimi brani:** l'iPhone non li comunica, quindi non sono mostrati.
 - **Testo:** è sincronizzato riga per riga, non parola per parola. Per i brani meno noti può mancare o non essere a tempo.

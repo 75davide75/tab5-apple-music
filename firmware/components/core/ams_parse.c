@@ -130,7 +130,43 @@ bool ams_apply_update(now_playing_t *np, uint8_t entity, uint8_t attr, uint8_t f
     return false;
 }
 
+/* AMS gives only the app's display name, in the iPhone's language. These are the names of
+ * Apple's Music app; the match is exact, so "YouTube Music" and the like never count.
+ * Only "Musica" (Italian) has been seen on a real device; the others are from Apple's
+ * localisations and are untested. */
+static const char *const MUSIC_APP_NAMES[] = {
+    "Music", "Apple Music",
+    "Musica",                       /* Italian */
+    "Musik",                        /* German, Swedish, Danish, Indonesian */
+    "Musique",                      /* French */
+    "Música",                       /* Spanish, Portuguese, Catalan */
+    "Muziek",                       /* Dutch */
+    "Musikk",                       /* Norwegian */
+    "Musiikki",                     /* Finnish */
+    "Muzyka",                       /* Polish */
+    "Hudba",                        /* Czech, Slovak */
+    "Zene",                         /* Hungarian */
+    "Muzică",                       /* Romanian */
+    "Glazba",                       /* Croatian */
+    "Müzik",                        /* Turkish */
+    "Muzik",                        /* Malay */
+    "Nhạc",                         /* Vietnamese */
+    "Μουσική",                      /* Greek */
+    "Музыка",                       /* Russian */
+    "Музика",                       /* Ukrainian */
+    "ミュージック",                 /* Japanese */
+    "音乐", "音樂",                 /* Chinese */
+    "음악",                         /* Korean */
+    "เพลง",                         /* Thai */
+    "מוזיקה",                       /* Hebrew */
+    "الموسيقى",                     /* Arabic */
+    "संगीत",                        /* Hindi */
+};
+
 bool ams_player_is_music(const now_playing_t *np)
 {
-    return strcmp(np->player, "Musica") == 0 || strcmp(np->player, "Music") == 0;
+    for (size_t i = 0; i < sizeof MUSIC_APP_NAMES / sizeof MUSIC_APP_NAMES[0]; i++) {
+        if (strcmp(np->player, MUSIC_APP_NAMES[i]) == 0) return true;
+    }
+    return false;
 }

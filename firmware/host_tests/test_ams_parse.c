@@ -125,6 +125,26 @@ static void test_player_is_music(void)
     CHECK(!ams_player_is_music(&np));
 }
 
+/* The app's name arrives in the iPhone's language. */
+static void test_player_is_music_other_languages(void)
+{
+    static const char *const yes[] = { "Musik", "Musique", "M\xc3\xbasica", "Muziek", "Muzyka",
+                                       "\xd0\x9c\xd1\x83\xd0\xb7\xd1\x8b\xd0\xba\xd0\xb0",
+                                       "\xe3\x83\x9f\xe3\x83\xa5\xe3\x83\xbc\xe3\x82\xb8\xe3\x83\x83\xe3\x82\xaf",
+                                       "\xe9\x9f\xb3\xe4\xb9\x90", "Apple Music" };
+    static const char *const no[] = { "YouTube Music", "Amazon Music", "Musicals", "WhatsApp", "Safari",
+                                      "Spotify", "Podcast", "TV", "" };
+    now_playing_t np; now_playing_init(&np);
+    for (size_t i = 0; i < sizeof yes / sizeof yes[0]; i++) {
+        apply(&np, AMS_ENT_PLAYER, AMS_PLAYER_NAME, 0, yes[i], 0);
+        CHECK(ams_player_is_music(&np));
+    }
+    for (size_t i = 0; i < sizeof no / sizeof no[0]; i++) {
+        apply(&np, AMS_ENT_PLAYER, AMS_PLAYER_NAME, 0, no[i], 0);
+        CHECK(!ams_player_is_music(&np));
+    }
+}
+
 static void test_unknown_entity_ignored(void)
 {
     now_playing_t np; now_playing_init(&np);
@@ -145,5 +165,6 @@ void run_ams_parse_tests(void)
     RUN(test_queue);
     RUN(test_duration);
     RUN(test_player_is_music);
+    RUN(test_player_is_music_other_languages);
     RUN(test_unknown_entity_ignored);
 }
