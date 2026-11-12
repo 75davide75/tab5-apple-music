@@ -71,7 +71,7 @@ final class HTTPServer {
             length = Int(line.dropFirst(15).trimmingCharacters(in: .whitespaces)) ?? 0
         }
         let bodyStart = headerEnd.upperBound
-        guard buffer.count - bodyStart >= length else { return nil }
+        guard length >= 0, buffer.count - bodyStart >= length else { return nil }
         let target = URLComponents(string: String(first[1]))
         var query: [String: String] = [:]
         for item in target?.queryItems ?? [] { query[item.name] = item.value ?? "" }

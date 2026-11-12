@@ -64,6 +64,8 @@ Disinstallare:
 companion/uninstall.sh
 ```
 
+Il compagno apre l'app Musica al login e ogni volta che deve leggerne una copertina: è normale vederla nel Dock.
+
 Il registro è in `~/Library/Logs/tab5-companion.log`. Al primo avvio macOS chiede il permesso di controllare l'app Musica: va accettato.
 
 ## Test

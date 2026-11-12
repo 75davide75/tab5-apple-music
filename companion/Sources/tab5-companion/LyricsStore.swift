@@ -5,6 +5,7 @@ import Foundation
 final class LyricsStore {
     private var cache: [String: Lyrics?] = [:]
     private let lock = NSLock()
+    private var lookupFailed = false     // set when a request got no usable HTTP answer
 
     func lyrics(title: String, artist: String, album: String, duration: Double) -> Lyrics? {
         guard !title.isEmpty else { return nil }
@@ -13,16 +14,20 @@ final class LyricsStore {
         if let hit = cache[key] { lock.unlock(); return hit }
         lock.unlock()
 
+        lookupFailed = false
         var result = exactMatch(title: title, artist: artist, album: album, duration: duration)
         if result?.synced != true, let better = search(title: title, artist: artist, duration: duration) {
             if better.synced || result == nil { result = better }
         }
         log("lyrics '\(title)' -> \(result.map { $0.synced ? "synced, \($0.lines.count) lines" : "plain" } ?? "none")")
 
-        lock.lock()
-        if cache.count > 300 { cache.removeAll() }
-        cache[key] = result
-        lock.unlock()
+        // "No lyrics" is remembered only when the archive really said so, not when it was unreachable.
+        if result != nil || !lookupFailed {
+            lock.lock()
+            if cache.count > 300 { cache.removeAll() }
+            cache[key] = result
+            lock.unlock()
+        }
         return result
     }
 
@@ -34,11 +39,14 @@ final class LyricsStore {
         request.setValue("tab5-companion (personal now-playing display)", forHTTPHeaderField: "User-Agent")
         let done = DispatchSemaphore(value: 0)
         var body: Data?
+        var status = 0
         URLSession.shared.dataTask(with: request) { data, response, _ in
-            if (response as? HTTPURLResponse)?.statusCode == 200 { body = data }
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 200 { body = data }
             done.signal()
         }.resume()
         done.wait()
+        if status != 200 && status != 404 { lookupFailed = true }
         return body.flatMap { try? JSONSerialization.jsonObject(with: $0) }
     }
 

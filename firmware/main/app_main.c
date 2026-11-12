@@ -69,7 +69,9 @@ static void on_ams_conn(uint8_t slot, bool connected)
     ESP_LOGI(TAG, "iOS slot %d %s", slot, connected ? "connected" : "disconnected");
     xSemaphoreTake(s_mx, portMAX_DELAY);
     if (!connected) {
+        uint32_t seq = s_np[slot].track_seq;
         now_playing_init(&s_np[slot]);
+        s_np[slot].track_seq = seq + 1;      /* whatever plays after a reconnect is a new track to us */
         arbiter_disconnected(&s_arb, (source_t)slot);
         s_dirty = true;
     }
@@ -149,7 +151,9 @@ static void on_mac(bool reachable, const char *state, const char *title, const c
         if (mac_state_apply(&s_np[SRC_MAC], state, title, artist, album, duration_s, elapsed_s, now_ms())) s_dirty = true;
         arbiter_report(&s_arb, SRC_MAC, s_np[SRC_MAC].state, now_ms());
     } else if (++failures == 3) {            /* three missed polls: the Mac is gone */
+        uint32_t seq = s_np[SRC_MAC].track_seq;
         now_playing_init(&s_np[SRC_MAC]);
+        s_np[SRC_MAC].track_seq = seq + 1;
         arbiter_disconnected(&s_arb, SRC_MAC);
         s_dirty = true;
     }
@@ -164,7 +168,7 @@ static void render_track(void)
     if (s_track && s_track->has_lyrics) ui_set_lyrics(s_track->lines, s_track->n, s_track->synced);
     else ui_set_lyrics(NULL, 0, false);
     if (s_track && s_track->has_bg) ui_set_background((const uint8_t *)s_track->bg, COMPANION_BG_W, COMPANION_BG_H);
-    else if (s_track) ui_set_background(NULL, 0, 0);
+    else ui_set_background(NULL, 0, 0);
     xSemaphoreGive(s_mx);
 }
 
@@ -180,12 +184,14 @@ static void ui_task(void *arg)
     source_t asked_src = SRC_NONE;
     int64_t changed_ms = 0, retry_ms = 0;
     bool ask_pending = false;
+    /* Work for the screen stays pending until the display lock is actually obtained. */
+    bool dirty = true, new_track = false;
 
     for (;;) {
         int64_t t = now_ms();
         xSemaphoreTake(s_mx, portMAX_DELAY);
         source_t src = arbiter_active(&s_arb);
-        bool dirty = s_dirty || src != shown_src;
+        dirty = dirty || s_dirty || src != shown_src;
         s_dirty = false;
         if (src != SRC_NONE) shown = s_np[src];
         else if (shown.state == PB_PLAYING) shown.state = PB_PAUSED;   /* source went away */
@@ -197,13 +203,23 @@ static void ui_task(void *arg)
 
         /* A track change arrives as several separate updates (artist, album, title, duration):
          * wait until they settle before asking the Mac about it. */
-        bool new_track = false;
         if (src != SRC_NONE && (shown.track_seq != asked_seq || src != asked_src)) {
             asked_seq = shown.track_seq;
             asked_src = src;
             changed_ms = t;
             ask_pending = true;
             new_track = true;
+            /* Answers still on their way belong to the previous track: make them stale now. */
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            ++s_req_seq;
+            companion_track_t *old = s_track;
+            s_track = NULL;
+            s_track_dirty = false;
+            s_track_missing = false;
+            track_dirty = false;
+            track_missing = false;
+            xSemaphoreGive(s_mx);
+            companion_track_free(old);
         }
         /* The Mac was unreachable last time: ask again once it is back. */
         if (track_missing && !ask_pending && src != SRC_NONE && companion_available() && t - retry_ms > 5000) {
@@ -223,10 +239,12 @@ static void ui_task(void *arg)
             if (dirty) {
                 ui_set_now_playing(&shown, src);
                 shown_src = src;
+                dirty = false;
             }
             if (new_track) {               /* the old cover and lyrics belong to the previous track */
                 ui_set_cover(NULL, 0, 0);
                 ui_clear_lyrics();
+                new_track = false;
             }
             if (track_dirty) render_track();
             xSemaphoreTake(s_mx, portMAX_DELAY);

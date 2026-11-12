@@ -208,10 +208,10 @@ static void start_discovery(peer_t *p)
 static void drop_peer(peer_t *p)
 {
     int slot = slot_of(p);
-    bool was_ready = p->ready;
     p->used = false;
     p->ready = false;
-    if (was_ready && s_on_conn) s_on_conn(slot, false);
+    /* Always report it: updates can arrive before the peer is marked ready. */
+    if (s_on_conn) s_on_conn(slot, false);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)

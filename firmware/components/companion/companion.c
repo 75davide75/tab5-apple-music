@@ -44,7 +44,8 @@ typedef struct {
 } job_t;
 
 static companion_callbacks_t s_cb;
-static QueueHandle_t s_jobs;
+static QueueHandle_t s_jobs, s_cmds;
+static volatile uint32_t s_latest_seq;   /* newest track asked about; older jobs are not worth the link */
 static volatile bool s_have_ip, s_available;
 static char s_base[64];
 static int s_failures;
@@ -355,19 +356,21 @@ static void worker(void *arg)
             last_discovery = xTaskGetTickCount();
         }
         job_t j;
-        if (s_available && xTaskGetTickCount() - last_mac_poll >= pdMS_TO_TICKS(MAC_POLL_MS) &&
-            uxQueueMessagesWaiting(s_jobs) == 0) {
-            poll_mac();
+        /* Transport commands go first: a press must not wait behind a download. */
+        if (xQueueReceive(s_cmds, &j, 0) == pdTRUE) {
+            run_job(&j);
+            last_mac_poll = xTaskGetTickCount();
+            continue;
+        }
+        if (xTaskGetTickCount() - last_mac_poll >= pdMS_TO_TICKS(MAC_POLL_MS) && uxQueueMessagesWaiting(s_jobs) == 0) {
+            /* While the Mac is unreachable keep saying so, or its last "playing" would stand for ever. */
+            if (s_available) poll_mac();
+            else if (s_cb.on_mac) s_cb.on_mac(false, NULL, NULL, NULL, NULL, 0, 0);
             last_mac_poll = xTaskGetTickCount();
         }
         if (xQueueReceive(s_jobs, &j, pdMS_TO_TICKS(200)) == pdTRUE) {
-            /* A newer track makes anything still waiting pointless: only its jobs are worth the slow link. */
-            job_t newer;
-            while (j.kind == JOB_COVER && xQueuePeek(s_jobs, &newer, 0) == pdTRUE && newer.seq != j.seq) {
-                free(j.query);
-                xQueueReceive(s_jobs, &j, 0);
-            }
-            run_job(&j);
+            if (j.seq != s_latest_seq) free(j.query);   /* about a track that is no longer playing */
+            else run_job(&j);
         }
     }
 }
@@ -378,7 +381,8 @@ esp_err_t companion_start(const companion_callbacks_t *cb)
 {
     s_cb = *cb;
     s_jobs = xQueueCreate(8, sizeof(job_t));
-    if (!s_jobs) return ESP_ERR_NO_MEM;
+    s_cmds = xQueueCreate(4, sizeof(job_t));
+    if (!s_jobs || !s_cmds) return ESP_ERR_NO_MEM;
 
     load_base();
     if (strlen(WIFI_SSID) == 0) {
@@ -400,21 +404,27 @@ esp_err_t companion_start(const companion_callbacks_t *cb)
 
 static char *build_query(const now_playing_t *np)
 {
-    char t[800], a[800], al[800];
+    /* A value that does not fit is sent empty rather than cut in the middle of a %XX escape. */
+    char t[401], a[301], al[301];
     if (!url_encode(np->title, t, sizeof t)) t[0] = 0;
     if (!url_encode(np->artist, a, sizeof a)) a[0] = 0;
     if (!url_encode(np->album, al, sizeof al)) al[0] = 0;
-    char *q = malloc(1200);
+    char *q = malloc(1100);
     if (!q) return NULL;
-    snprintf(q, 1200, "title=%.400s&artist=%.300s&album=%.300s&duration=%.1f", t, a, al,
+    snprintf(q, 1100, "title=%s&artist=%s&album=%s&duration=%.1f", t, a, al,
              np->duration_s > 0 ? (double)np->duration_s : 0.0);
     return q;
 }
 
 void companion_request_track(const now_playing_t *np, uint32_t seq)
 {
+    s_latest_seq = seq;
     job_t track = {.kind = JOB_TRACK, .seq = seq, .query = build_query(np)};
-    if (xQueueSend(s_jobs, &track, 0) != pdTRUE) free(track.query);
+    if (xQueueSend(s_jobs, &track, 0) != pdTRUE) {
+        free(track.query);
+        if (s_cb.on_track) s_cb.on_track(seq, NULL);   /* reported as missing so that it is asked again */
+        return;
+    }
     job_t cover = {.kind = JOB_COVER, .seq = seq, .query = build_query(np)};
     if (xQueueSend(s_jobs, &cover, 0) != pdTRUE) free(cover.query);
 }
@@ -427,5 +437,5 @@ void companion_mac_command(companion_mac_cmd_t cmd, float seek_s)
     if (cmd == COMPANION_MAC_SEEK) snprintf(body, 64, "{\"cmd\":\"seek\",\"position_s\":%.1f}", (double)seek_s);
     else snprintf(body, 64, "{\"cmd\":\"%s\"}", names[cmd]);
     job_t j = {.kind = JOB_MAC_CMD, .query = body};
-    if (xQueueSend(s_jobs, &j, 0) != pdTRUE) free(body);
+    if (xQueueSend(s_cmds, &j, 0) != pdTRUE) free(body);
 }

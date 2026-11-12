@@ -92,8 +92,22 @@ static void test_standby_touch_while_paused_keeps_lit(void)
     standby_on_touch(&s, 1000);              /* early touch never shortens the pause window */
 }
 
+/* The real caller reports the state on every tick: a wake-up touch must survive that. */
+static void test_standby_touch_survives_repeated_stopped_reports(void)
+{
+    standby_t s; standby_init(&s, 0);
+    standby_on_playback(&s, PB_STOPPED, 500);
+    standby_on_touch(&s, 1000);
+    standby_on_playback(&s, PB_STOPPED, 1250);
+    standby_on_playback(&s, PB_STOPPED, 1500);
+    CHECK(standby_screen_on(&s, 1500));
+    CHECK(standby_screen_on(&s, 1000 + 29999));
+    CHECK(!standby_screen_on(&s, 1000 + 30000));
+}
+
 void run_standby_tests(void)
 {
+    RUN(test_standby_touch_survives_repeated_stopped_reports);
     RUN(test_standby_off_at_boot);
     RUN(test_standby_on_while_playing);
     RUN(test_standby_pause_timeout);

@@ -7,3 +7,4 @@ firmware/main/wifi_secrets.h
 companion/.build/
 .DS_Store
 firmware/host_tests/build/
+firmware/sdkconfig [0-9]*

@@ -10,7 +10,8 @@ void standby_on_playback(standby_t *s, pb_state_t state, int64_t now_ms)
 {
     if (state == PB_PAUSED && s->state == PB_PLAYING) {
         s->lit_until_ms = now_ms + STANDBY_PAUSE_TIMEOUT_MS;
-    } else if (state == PB_STOPPED) {
+    } else if (state == PB_STOPPED && s->state != PB_STOPPED) {
+        /* only when playback actually stops: repeated reports must not cancel a wake-up touch */
         s->lit_until_ms = now_ms;
     }
     s->state = state;
