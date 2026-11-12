@@ -42,17 +42,30 @@ static bool parse_float(const char *s, size_t len, float *out)
     return true;
 }
 
-static bool parse_playback_info(now_playing_t *np, const char *value, size_t len, int64_t now_ms)
+static bool read_playback_info(const char *value, size_t len, float *state, float *rate, float *elapsed)
 {
     /* "state,rate,elapsed" */
     const char *c1 = memchr(value, ',', len);
     if (!c1) return false;
     const char *c2 = memchr(c1 + 1, ',', len - (size_t)(c1 + 1 - value));
     if (!c2) return false;
+    return parse_float(value, (size_t)(c1 - value), state)
+        && parse_float(c1 + 1, (size_t)(c2 - c1 - 1), rate)
+        && parse_float(c2 + 1, len - (size_t)(c2 + 1 - value), elapsed);
+}
+
+static bool parse_playback_info(now_playing_t *np, const char *value, size_t len, int64_t now_ms)
+{
     float state, rate, elapsed;
-    if (!parse_float(value, (size_t)(c1 - value), &state)) return false;
-    if (!parse_float(c1 + 1, (size_t)(c2 - c1 - 1), &rate)) return false;
-    if (!parse_float(c2 + 1, len - (size_t)(c2 + 1 - value), &elapsed)) return false;
+    if (!read_playback_info(value, len, &state, &rate, &elapsed)) {
+        /* The iPhone sends an empty value when its player closes or its queue ends: nothing is
+         * playing. Keeping the previous state here would leave the screen on for ever. */
+        if (np->state == PB_STOPPED) return false;
+        np->state = PB_STOPPED;
+        np->rate = 0;
+        np->update_ms = now_ms;
+        return true;
+    }
 
     /* 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding */
     np->state = ((int)state == 0) ? PB_PAUSED : PB_PLAYING;

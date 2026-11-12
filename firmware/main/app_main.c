@@ -104,7 +104,10 @@ static void on_touch(lv_event_t *e)
     bool was_on = standby_screen_on(&s_standby, t);
     standby_on_touch(&s_standby, t);
     xSemaphoreGive(s_mx);
-    if (!was_on) lv_indev_wait_release(lv_event_get_target(e));
+    if (!was_on) {
+        ESP_LOGI(TAG, "touch woke the screen");
+        lv_indev_wait_release(lv_event_get_target(e));
+    }
 }
 
 /* ---- companion callbacks (worker task) ---- */
@@ -257,6 +260,8 @@ static void ui_task(void *arg)
         }
 
         if (on != screen_on) {
+            ESP_LOGI(TAG, "screen %s: source %d, state %d, player '%s', title '%s'", on ? "on" : "off",
+                     (int)src, (int)shown.state, shown.player, shown.title);
             /* ramp over about 400 ms instead of snapping */
             for (int step = 1; step <= 8; step++) {
                 int level = BRIGHTNESS_ON * step / 8;

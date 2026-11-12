@@ -24,16 +24,19 @@ static void test_playback_info_paused(void)
     CHECK_NEAR(np.elapsed_at_update_s, 12.0);
 }
 
+/* The iPhone sends an empty value when its player closes or its queue ends: that is "nothing
+ * playing", and must not leave the last state (and the screen) on for ever. */
 static void test_playback_info_malformed(void)
 {
     const char *bad[] = {"", "1", "x,y,z"};
     for (int i = 0; i < 3; i++) {
         now_playing_t np; now_playing_init(&np);
         apply(&np, AMS_ENT_PLAYER, AMS_PLAYER_PLAYBACK_INFO, 0, "1,1.0,83.5", 5000);
-        CHECK(!apply(&np, AMS_ENT_PLAYER, AMS_PLAYER_PLAYBACK_INFO, 0, bad[i], 9000));
+        CHECK(apply(&np, AMS_ENT_PLAYER, AMS_PLAYER_PLAYBACK_INFO, 0, bad[i], 9000));
+        CHECK(np.state == PB_STOPPED);
+        CHECK(!apply(&np, AMS_ENT_PLAYER, AMS_PLAYER_PLAYBACK_INFO, 0, bad[i], 9500));   /* nothing new */
+        CHECK(apply(&np, AMS_ENT_PLAYER, AMS_PLAYER_PLAYBACK_INFO, 0, "1,1.0,2.0", 10000));
         CHECK(np.state == PB_PLAYING);
-        CHECK_NEAR(np.elapsed_at_update_s, 83.5);
-        CHECK(np.update_ms == 5000);
     }
 }
 
