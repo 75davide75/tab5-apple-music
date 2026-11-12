@@ -11,6 +11,10 @@
 #define UI_L_COVER 400
 #define UI_L_LYRICS_X 500
 #define UI_L_LYRICS_W (UI_W - UI_L_LYRICS_X - 44)
+/* The lyrics scroll inside a band shorter than the screen: every scrolled frame redraws the
+ * whole band, and this tablet is slow at that (see ui.c). */
+#define UI_L_LYRICS_Y 70
+#define UI_L_LYRICS_H 580
 
 /* No-lyrics layout: large cover on the left, title and controls on the right. */
 #define UI_N_COVER 560

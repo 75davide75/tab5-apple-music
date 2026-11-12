@@ -101,7 +101,7 @@ static inline int shadow_keep(const shadow_tab_t *t, int px, int py)
 }
 
 bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh, int keep255,
-                const bg_shadow_t *shadow)
+                const bg_shadow_t *shadow, bg_flat_t *flat)
 {
     if (!src || !dst || w < 2 || h < 2 || w > 255 || h > 255 || dw < 2 || dh < 2) return false;
     shadow_tab_t tab = {0};
@@ -128,6 +128,36 @@ bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh
             out[x * 3 + 2] = (uint16_t)(b >> 4);
         }
     }
+    /* The flat side: its colour is the average of the widened rows there, and blend[] says
+     * how much of it each column of the join takes (0..256). */
+    int flat_c[3] = {0, 0, 0}, flat_x0 = dw, join_x0 = dw;
+    uint16_t flat_px = 0;
+    uint16_t *blend = NULL;
+    if (flat && flat->x0 >= 0 && flat->x0 < dw && flat->fade >= 0) {
+        flat_x0 = flat->x0;
+        join_x0 = flat_x0 - flat->fade;
+        blend = flat->fade > 0 ? work_alloc(sizeof(uint16_t) * (size_t)flat->fade) : NULL;
+        if (flat->fade > 0 && !blend) join_x0 = flat_x0;        /* out of memory: a hard join */
+        for (int i = 0; blend && i < flat->fade; i++) {
+            float u = ((float)i + 0.5f) / (float)flat->fade;
+            blend[i] = (uint16_t)(u * u * (3.0f - 2.0f * u) * 256.0f + 0.5f);
+        }
+        int64_t sum[3] = {0, 0, 0};
+        for (int y = 0; y < h; y++) {
+            const uint16_t *row = rows + (size_t)y * (size_t)dw * 3;
+            for (int x = flat_x0; x < dw; x++) for (int k = 0; k < 3; k++) sum[k] += row[x * 3 + k];
+        }
+        int64_t n = (int64_t)h * (dw - flat_x0);
+        int q[3];
+        for (int k = 0; k < 3; k++) {
+            int v = (int)(sum[k] / n);
+            if (keep255 < 255) v = (int)(((int64_t)v * keep255 * 257 + 32768) >> 16);
+            q[k] = (v + 128) >> 8;                              /* nearest shade the screen has */
+            flat_c[k] = q[k] << 8;
+        }
+        flat_px = (uint16_t)((q[0] << 11) | (q[1] << 5) | q[2]);
+        flat->colour = flat_px;
+    }
     int sx0 = dw, sx1 = 0, sy0 = dh, sy1 = 0;           /* the only pixels the shadow can touch */
     if (shadow) {
         sx0 = shadow->x - shadow->blur; sx1 = shadow->x + shadow->w + shadow->blur;
@@ -141,7 +171,8 @@ bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh
         const int w0 = yt.wt[0], w1 = yt.wt[1], w2 = yt.wt[2], w3 = yt.wt[3];
         const bool shadow_row = shadow && y >= sy0 && y < sy1;
         uint16_t *out = dst + (size_t)y * (size_t)dw;
-        for (int x = 0; x < dw; x++) {
+        for (int x = flat_x0; x < dw; x++) out[x] = flat_px;
+        for (int x = 0; x < flat_x0; x++) {
             int i = x * 3;
             int c[3];
             for (int k = 0; k < 3; k++) {
@@ -152,6 +183,10 @@ bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh
             if (keep < 255) {
                 for (int k = 0; k < 3; k++) c[k] = (int)(((int64_t)c[k] * keep * 257 + 32768) >> 16);
             }
+            if (x >= join_x0) {
+                int t = blend[x - join_x0];
+                for (int k = 0; k < 3; k++) c[k] += ((flat_c[k] - c[k]) * t) >> 8;
+            }
             int n = dither_at(x, y);
             /* Opposite noise on green so the three channels do not brighten together. */
             int r = (c[0] + n) >> 8, g = (c[1] + 255 - n) >> 8, b = (c[2] + n) >> 8;
@@ -161,5 +196,6 @@ bool bg_upscale(const uint16_t *src, int w, int h, uint16_t *dst, int dw, int dh
     free(xt);
     free(rows);
     free(tab.root);
+    free(blend);
     return true;
 }

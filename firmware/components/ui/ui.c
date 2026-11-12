@@ -132,9 +132,21 @@ static void render_background(void)
     /* Narrower than the cover and pushed down, so the shadow falls mostly below it. */
     bg_shadow_t shadow = { .x = cover_x + 20, .y = cover_y + 36, .w = cover - 40, .h = cover - 16,
                            .radius = UI_COVER_RADIUS, .blur = 90, .opa255 = 72 };
+    /* With lyrics, the right-hand side is one flat colour and the lyrics panel is an opaque
+     * rectangle of it: scrolling then never redraws the picture, which cost 29 ms a frame. */
+    bg_flat_t side = { .x0 = UI_L_LYRICS_X - 10, .fade = 300, .colour = 0x18E3 };
     int64_t began = esp_timer_get_time();
     bool ok = bg_upscale(has ? s_bg_src : flat, has ? s_bg_src_w : 2, has ? s_bg_src_h : 2,
-                         (uint16_t *)s_bg_buf, UI_W, UI_H, has ? 255 - UI_OPA_VEIL : 255, &shadow);
+                         (uint16_t *)s_bg_buf, UI_W, UI_H, has ? 255 - UI_OPA_VEIL : 255, &shadow,
+                         s_lyrics_layout ? &side : NULL);
+    if (ok && s_lyrics_layout) {
+        int r = (side.colour >> 11) & 31, g = (side.colour >> 5) & 63, b = side.colour & 31;
+        lv_obj_set_style_bg_color(s_lyrics, lv_color_make((uint8_t)((r << 3) | (r >> 2)), (uint8_t)((g << 2) | (g >> 4)),
+                                                          (uint8_t)((b << 3) | (b >> 2))), 0);
+        lv_obj_set_style_bg_opa(s_lyrics, LV_OPA_COVER, 0);
+    } else {
+        lv_obj_set_style_bg_opa(s_lyrics, LV_OPA_TRANSP, 0);
+    }
     ESP_LOGI("ui", "background drawn in %d ms", (int)((esp_timer_get_time() - began) / 1000));
     if (!ok) {
         lv_obj_set_hidden(s_bg, true);
@@ -223,7 +235,8 @@ void ui_set_lyrics(const char *const *lines, int n, bool synced)
 }
 
 /* Moving the lyrics redraws most of the screen, which this tablet manages about ten times a
- * second (measured: 96 ms per frame), so the glide is not perfectly smooth. Stepping in one
+ * second at best (measured: 96 ms per frame over the picture, 53 ms over the flat panel used
+ * now), so the glide is not perfectly smooth. Stepping in one
  * frame (LV_ANIM_OFF) was tried and the owner preferred the glide. */
 #define LYRIC_SCROLL_ANIM LV_ANIM_ON
 
@@ -388,12 +401,12 @@ void ui_init(ui_cmd_cb_t on_cmd)
     /* Lyrics scroll inside this column; the padding lets the first and last lines reach the reading position. */
     s_lyrics = lv_obj_create(scr);
     lv_obj_remove_style_all(s_lyrics);
-    lv_obj_set_pos(s_lyrics, UI_L_LYRICS_X, 0);
-    lv_obj_set_size(s_lyrics, UI_L_LYRICS_W, UI_H);
+    lv_obj_set_pos(s_lyrics, UI_L_LYRICS_X, UI_L_LYRICS_Y);
+    lv_obj_set_size(s_lyrics, UI_L_LYRICS_W, UI_L_LYRICS_H);
     lv_obj_set_flex_flow(s_lyrics, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_lyrics, UI_LYRIC_GAP, 0);
-    lv_obj_set_style_pad_top(s_lyrics, UI_H / 3, 0);
-    lv_obj_set_style_pad_bottom(s_lyrics, UI_H / 2, 0);
+    lv_obj_set_style_pad_top(s_lyrics, UI_L_LYRICS_H / 3, 0);
+    lv_obj_set_style_pad_bottom(s_lyrics, UI_L_LYRICS_H / 2, 0);
     lv_obj_set_scroll_dir(s_lyrics, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_lyrics, LV_SCROLLBAR_MODE_OFF);
 
