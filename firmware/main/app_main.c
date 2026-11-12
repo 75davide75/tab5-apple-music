@@ -239,7 +239,12 @@ static void ui_task(void *arg)
         }
 
         if (on != screen_on) {
-            bsp_display_brightness_set(on ? BRIGHTNESS_ON : 0);
+            /* ramp over about 400 ms instead of snapping */
+            for (int step = 1; step <= 8; step++) {
+                int level = BRIGHTNESS_ON * step / 8;
+                bsp_display_brightness_set(on ? level : BRIGHTNESS_ON - level);
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
             screen_on = on;
         }
         vTaskDelay(pdMS_TO_TICKS(UI_PERIOD_MS));

@@ -218,7 +218,7 @@ void ui_set_cover(const uint8_t *rgb565, int w, int h)
     rgb565_dsc(&s_cover_dsc, s_cover_buf, UI_COVER_PX, UI_COVER_PX);
     lv_image_set_src(s_cover, &s_cover_dsc);
     lv_obj_set_hidden(s_cover, false);
-    lv_obj_invalidate(s_cover);
+    lv_obj_fade_in(s_cover, 300, 0);
 }
 
 /* Bilinear upscale of the small blurred image to the full screen, with the dark veil baked in. */

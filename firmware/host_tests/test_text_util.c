@@ -31,36 +31,10 @@ static void test_url_encode_overflow(void)
     CHECK(!url_encode("abcdefgh", out, sizeof out));
 }
 
-static void test_played_set(void)
-{
-    static played_set_t s;
-    played_set_clear(&s);
-    CHECK(!played_set_has(&s, 7));
-    played_set_add(&s, 7);
-    played_set_add(&s, 7);
-    played_set_add(&s, 9);
-    CHECK(s.n == 2);
-    CHECK(played_set_has(&s, 7) && played_set_has(&s, 9) && !played_set_has(&s, 8));
-    played_set_clear(&s);
-    CHECK(!played_set_has(&s, 7));
-}
-
-static void test_played_set_full_is_safe(void)
-{
-    static played_set_t s;
-    played_set_clear(&s);
-    for (uint32_t i = 0; i < PLAYED_SET_MAX + 50; i++) played_set_add(&s, i + 1);
-    CHECK(s.n == PLAYED_SET_MAX);
-    CHECK(played_set_has(&s, 1));
-    CHECK(!played_set_has(&s, PLAYED_SET_MAX + 10));
-}
-
 void run_text_util_tests(void)
 {
     RUN(test_url_encode_plain);
     RUN(test_url_encode_reserved_and_utf8);
     RUN(test_url_encode_empty);
     RUN(test_url_encode_overflow);
-    RUN(test_played_set);
-    RUN(test_played_set_full_is_safe);
 }

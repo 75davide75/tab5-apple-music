@@ -2,6 +2,14 @@
 
 Data: 2026-11-11
 
+> **Modifica del 2026-11-12, chiesta dall'utente dopo aver visto il prototipo.**
+> La colonna di destra non mostra più l'elenco della playlist ma il **testo sincronizzato** del brano
+> (da lrclib.net tramite il compagno Mac; l'utente ha acconsentito all'invio di titolo e artista a quel sito).
+> Si carica la sola copertina del brano in corso. Se il testo non esiste: copertina grande a sinistra,
+> titolo, barra e tasti a destra. Le sezioni "Individuare la playlist" e "Colonna di destra" qui sotto
+> sono superate e restano solo come storia del progetto. Non è stata realizzata la ricerca della copertina
+> direttamente dal tablet a Mac spento.
+
 ## A cosa serve
 
 Un M5Stack Tab5 appoggiato sulla scrivania, davanti all'utente, che mostra il brano in riproduzione su Apple Music e permette di cambiare canzone senza prendere in mano il telefono e senza cambiare finestra sul Mac. L'uso è domestico. La riproduzione parte di solito da iPhone o iPad, a volte dal Mac. L'utente ascolta quasi sempre playlist proprie con riproduzione casuale attiva.

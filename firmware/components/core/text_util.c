@@ -24,17 +24,3 @@ bool url_encode(const char *src, char *dst, size_t cap)
     dst[o] = 0;
     return true;
 }
-
-void played_set_clear(played_set_t *s) { s->n = 0; }
-
-bool played_set_has(const played_set_t *s, uint32_t id)
-{
-    for (int i = 0; i < s->n; i++) if (s->ids[i] == id) return true;
-    return false;
-}
-
-void played_set_add(played_set_t *s, uint32_t id)
-{
-    if (s->n >= PLAYED_SET_MAX || played_set_has(s, id)) return;
-    s->ids[s->n++] = id;
-}
